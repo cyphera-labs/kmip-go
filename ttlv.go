@@ -18,6 +18,7 @@ package kmip
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"math"
 )
 
@@ -182,8 +183,18 @@ func EncodeDateTime(tag int, epochSeconds int64) []byte {
 
 // --- Decoding ---
 
+// Maximum nesting depth for TTLV structures.
+const maxDecodeDepth = 32
+
 // DecodeTTLV decodes a TTLV buffer into a parsed tree.
 func DecodeTTLV(data []byte, offset int) (*Item, error) {
+	return decodeTTLVDepth(data, offset, 0)
+}
+
+func decodeTTLVDepth(data []byte, offset int, depth int) (*Item, error) {
+	if depth > maxDecodeDepth {
+		return nil, errors.New("TTLV: maximum nesting depth exceeded")
+	}
 	if len(data)-offset < 8 {
 		return nil, errors.New("TTLV buffer too short for header")
 	}
@@ -195,6 +206,11 @@ func DecodeTTLV(data []byte, offset int) (*Item, error) {
 	totalLength := 8 + padded
 	valueStart := offset + 8
 
+	// Bounds check: ensure declared length fits within buffer.
+	if valueStart+padded > len(data) {
+		return nil, fmt.Errorf("TTLV: declared length %d exceeds buffer (have %d bytes)", length, len(data)-valueStart)
+	}
+
 	var value interface{}
 	switch typ {
 	case TypeStructure:
@@ -202,7 +218,7 @@ func DecodeTTLV(data []byte, offset int) (*Item, error) {
 		pos := valueStart
 		end := valueStart + length
 		for pos < end {
-			child, err := DecodeTTLV(data, pos)
+			child, err := decodeTTLVDepth(data, pos, depth+1)
 			if err != nil {
 				return nil, err
 			}

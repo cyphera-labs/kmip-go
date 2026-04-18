@@ -23,21 +23,27 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
+// Maximum KMIP response size (16MB).
+const maxResponseSize = 16 << 20
+
 // ClientOptions configures a KmipClient.
 type ClientOptions struct {
-	Host       string        // KMIP server hostname
-	Port       int           // KMIP server port (default 5696)
-	ClientCert string        // Path to client certificate PEM
-	ClientKey  string        // Path to client private key PEM
-	CACert     string        // Path to CA certificate PEM (optional)
-	Timeout    time.Duration // Connection timeout (default 10s)
+	Host               string        // KMIP server hostname (required)
+	Port               int           // KMIP server port (default 5696)
+	ClientCert         string        // Path to client certificate PEM (required)
+	ClientKey          string        // Path to client private key PEM (required)
+	CACert             string        // Path to CA certificate PEM (uses system roots if empty)
+	Timeout            time.Duration // Connection timeout (default 10s)
+	InsecureSkipVerify bool          // DANGER: disables server certificate verification
 }
 
 // KmipClient connects to a KMIP 1.4 server via mTLS.
 type KmipClient struct {
+	mu      sync.Mutex
 	host    string
 	port    int
 	timeout time.Duration
@@ -47,6 +53,9 @@ type KmipClient struct {
 
 // NewClient creates a new KmipClient.
 func NewClient(opts ClientOptions) (*KmipClient, error) {
+	if opts.Host == "" {
+		return nil, fmt.Errorf("KMIP: host is required")
+	}
 	if opts.Port == 0 {
 		opts.Port = 5696
 	}
@@ -54,7 +63,10 @@ func NewClient(opts ClientOptions) (*KmipClient, error) {
 		opts.Timeout = 10 * time.Second
 	}
 
-	// Load client certificate and key
+	// Load client certificate and key.
+	if opts.ClientCert == "" || opts.ClientKey == "" {
+		return nil, fmt.Errorf("KMIP: client certificate and key are required")
+	}
 	cert, err := tls.LoadX509KeyPair(opts.ClientCert, opts.ClientKey)
 	if err != nil {
 		return nil, fmt.Errorf("KMIP: failed to load client certificate: %w", err)
@@ -63,9 +75,17 @@ func NewClient(opts ClientOptions) (*KmipClient, error) {
 	tlsConfig := &tls.Config{
 		Certificates: []tls.Certificate{cert},
 		MinVersion:   tls.VersionTLS12,
+		CipherSuites: []uint16{
+			tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+			tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+			tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+			tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+		},
 	}
 
-	// Load CA certificate if provided
+	// Load CA certificate. If not provided, use system root CAs.
 	if opts.CACert != "" {
 		caPEM, err := os.ReadFile(opts.CACert)
 		if err != nil {
@@ -76,7 +96,11 @@ func NewClient(opts ClientOptions) (*KmipClient, error) {
 			return nil, fmt.Errorf("KMIP: failed to parse CA certificate")
 		}
 		tlsConfig.RootCAs = pool
-	} else {
+	}
+	// When CACert is empty, RootCAs is nil → Go uses system certificate pool.
+
+	// Only set InsecureSkipVerify if explicitly requested.
+	if opts.InsecureSkipVerify {
 		tlsConfig.InsecureSkipVerify = true
 	}
 
@@ -158,6 +182,8 @@ func (c *KmipClient) FetchKey(name string) ([]byte, error) {
 
 // Close shuts down the TLS connection.
 func (c *KmipClient) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.conn != nil {
 		err := c.conn.Close()
 		c.conn = nil
@@ -166,31 +192,57 @@ func (c *KmipClient) Close() error {
 	return nil
 }
 
+// ZeroBytes securely zeroes a byte slice. Call this on key material when done.
+func ZeroBytes(b []byte) {
+	for i := range b {
+		b[i] = 0
+	}
+}
+
 // send sends a KMIP request and receives the response.
+// Thread-safe: only one operation at a time per connection.
 func (c *KmipClient) send(request []byte) ([]byte, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	conn, err := c.connect()
 	if err != nil {
 		return nil, err
 	}
 
-	// Write request
+	// Set deadline for this operation.
+	conn.SetDeadline(time.Now().Add(c.timeout))
+
+	// Write request.
 	if _, err := conn.Write(request); err != nil {
+		c.conn = nil // Mark connection as stale.
 		return nil, fmt.Errorf("KMIP: failed to write request: %w", err)
 	}
 
-	// Read TTLV header (8 bytes) to determine response length
+	// Read TTLV header (8 bytes) to determine response length.
 	header := make([]byte, 8)
 	if _, err := io.ReadFull(conn, header); err != nil {
+		c.conn = nil
 		return nil, fmt.Errorf("KMIP: failed to read response header: %w", err)
 	}
 
+	// Validate response size.
 	valueLength := int(binary.BigEndian.Uint32(header[4:8]))
+	if valueLength > maxResponseSize {
+		c.conn = nil
+		return nil, fmt.Errorf("KMIP: response too large (%d bytes, max %d)", valueLength, maxResponseSize)
+	}
+
 	response := make([]byte, 8+valueLength)
 	copy(response, header)
 
 	if _, err := io.ReadFull(conn, response[8:]); err != nil {
+		c.conn = nil
 		return nil, fmt.Errorf("KMIP: failed to read response body: %w", err)
 	}
+
+	// Clear deadline.
+	conn.SetDeadline(time.Time{})
 
 	return response, nil
 }
@@ -214,6 +266,7 @@ func (c *KmipClient) connect() (*tls.Conn, error) {
 }
 
 // ResolveAlgorithm converts an algorithm name string to its KMIP enum value.
+// Returns 0 for unknown algorithms.
 func ResolveAlgorithm(name string) int {
 	switch strings.ToUpper(name) {
 	case "AES":
@@ -237,6 +290,6 @@ func ResolveAlgorithm(name string) int {
 	case "HMACSHA512":
 		return AlgorithmHMACSHA512
 	default:
-		return AlgorithmAES
+		return 0
 	}
 }
