@@ -6,19 +6,22 @@ on:
 
 jobs:
   publish:
-    name: Register on pkg.go.dev
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
-          go-version: '1.22'
-      - run: go test ./...
+          go-version: "1.22"
+      - name: Test
+        run: go test ./... -v
       - name: Register with Go Module Proxy
         run: |
           VERSION=${GITHUB_REF#refs/tags/}
           echo "Registering $VERSION with proxy.golang.org..."
           curl -sf "https://proxy.golang.org/github.com/cyphera-labs/kmip-go/@v/${VERSION}.info" || true
+          echo ""
           echo "Requesting pkg.go.dev indexing..."
           curl -sf "https://proxy.golang.org/github.com/cyphera-labs/kmip-go/@v/${VERSION}.mod" || true
-          echo "Done. https://pkg.go.dev/github.com/cyphera-labs/kmip-go@${VERSION}"
+          echo ""
+          echo "Done. Package will appear at:"
+          echo "  https://pkg.go.dev/github.com/cyphera-labs/kmip-go@${VERSION}"
