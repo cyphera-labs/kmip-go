@@ -92,10 +92,12 @@ const (
 
 // Object types.
 const (
-	ObjectTypeSymmetricKey = 0x00000001
-	ObjectTypePublicKey    = 0x00000002
-	ObjectTypePrivateKey   = 0x00000003
-	ObjectTypeCertificate  = 0x00000006
+	ObjectTypeCertificate  = 0x00000001
+	ObjectTypeSymmetricKey = 0x00000002
+	ObjectTypePublicKey    = 0x00000003
+	ObjectTypePrivateKey   = 0x00000004
+	ObjectTypeSplitKey     = 0x00000005
+	ObjectTypeTemplate     = 0x00000006
 	ObjectTypeSecretData   = 0x00000007
 	ObjectTypeOpaqueData   = 0x00000008
 )
