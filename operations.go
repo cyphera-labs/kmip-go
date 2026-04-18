@@ -192,10 +192,13 @@ func ParseResponse(data []byte) (*Response, error) {
 
 // ParseLocatePayload parses a Locate response payload.
 func ParseLocatePayload(payload *Item) *LocateResult {
-	ids := FindChildren(payload, TagUniqueIdentifier)
 	result := &LocateResult{
-		UniqueIdentifiers: make([]string, 0, len(ids)),
+		UniqueIdentifiers: make([]string, 0),
 	}
+	if payload == nil {
+		return result
+	}
+	ids := FindChildren(payload, TagUniqueIdentifier)
 	for _, id := range ids {
 		result.UniqueIdentifiers = append(result.UniqueIdentifiers, id.StringValue())
 	}
