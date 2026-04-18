@@ -87,7 +87,7 @@ const (
 	OperationGet      = 0x0000000A
 	OperationActivate = 0x00000012
 	OperationDestroy  = 0x00000014
-	OperationCheck    = 0x0000001C
+	OperationCheck    = 0x00000009
 )
 
 // Object types.

@@ -109,9 +109,9 @@ func TestOperationValues(t *testing.T) {
 			t.Errorf("got 0x%08X, want 0x00000014", OperationDestroy)
 		}
 	})
-	t.Run("Check = 0x0000001C", func(t *testing.T) {
-		if OperationCheck != 0x0000001C {
-			t.Errorf("got 0x%08X, want 0x0000001C", OperationCheck)
+	t.Run("Check = 0x00000009", func(t *testing.T) {
+		if OperationCheck != 0x00000009 {
+			t.Errorf("got 0x%08X, want 0x00000009", OperationCheck)
 		}
 	})
 	t.Run("no duplicate Operation values", func(t *testing.T) {
