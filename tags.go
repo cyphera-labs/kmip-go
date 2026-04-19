@@ -80,14 +80,87 @@ const (
 	TagTemplateAttribute = 0x420091
 )
 
-// Operations.
+// Tags — key pair.
 const (
-	OperationCreate   = 0x00000001
-	OperationLocate   = 0x00000008
-	OperationGet      = 0x0000000A
-	OperationActivate = 0x00000012
-	OperationDestroy  = 0x00000014
-	OperationCheck    = 0x00000009
+	TagPrivateKeyUniqueIdentifier = 0x420066
+	TagPublicKeyUniqueIdentifier  = 0x42006F
+	TagPublicKey                  = 0x42004E
+	TagPrivateKey                 = 0x42004D
+)
+
+// Tags — certificate.
+const (
+	TagCertificate      = 0x420021
+	TagCertificateType  = 0x42001D
+	TagCertificateValue = 0x42001E
+)
+
+// Tags — crypto operations.
+const (
+	TagData              = 0x420033
+	TagIVCounterNonce    = 0x420047
+	TagSignatureData     = 0x42004F
+	TagMACData           = 0x420051
+	TagValidityIndicator = 0x420098
+)
+
+// Tags — revocation.
+const (
+	TagRevocationReason     = 0x420082
+	TagRevocationReasonCode = 0x420083
+)
+
+// Tags — query.
+const (
+	TagQueryFunction = 0x420074
+)
+
+// Tags — state.
+const (
+	TagState = 0x42008D
+)
+
+// Tags — derivation.
+const (
+	TagDerivationMethod     = 0x420031
+	TagDerivationParameters = 0x420032
+	TagDerivationData       = 0x420030
+)
+
+// Tags — lease.
+const (
+	TagLeaseTime = 0x420049
+)
+
+// Operations (KMIP 1.4 — verified against OASIS spec).
+const (
+	OperationCreate           = 0x00000001
+	OperationCreateKeyPair    = 0x00000002
+	OperationRegister         = 0x00000003
+	OperationReKey            = 0x00000004
+	OperationDeriveKey        = 0x00000005
+	OperationLocate           = 0x00000008
+	OperationCheck            = 0x00000009
+	OperationGet              = 0x0000000A
+	OperationGetAttributes    = 0x0000000B
+	OperationGetAttributeList = 0x0000000C
+	OperationAddAttribute     = 0x0000000D
+	OperationModifyAttribute  = 0x0000000E
+	OperationDeleteAttribute  = 0x0000000F
+	OperationObtainLease      = 0x00000010
+	OperationActivate         = 0x00000012
+	OperationRevoke           = 0x00000013
+	OperationDestroy          = 0x00000014
+	OperationArchive          = 0x00000015
+	OperationRecover          = 0x00000016
+	OperationQuery            = 0x00000018
+	OperationPoll             = 0x0000001A
+	OperationDiscoverVersions = 0x0000001E
+	OperationEncrypt          = 0x0000001F
+	OperationDecrypt          = 0x00000020
+	OperationSign             = 0x00000021
+	OperationSignatureVerify  = 0x00000022
+	OperationMAC              = 0x00000023
 )
 
 // Object types.

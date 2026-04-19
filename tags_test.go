@@ -470,3 +470,153 @@ func TestTagValuesInKMIPRange(t *testing.T) {
 	})
 }
 
+// ---------------------------------------------------------------------------
+// New operation constant values — KMIP 1.4
+// ---------------------------------------------------------------------------
+
+func TestNewOperationValues(t *testing.T) {
+	cases := []struct {
+		name  string
+		value int
+		want  int
+	}{
+		{"CreateKeyPair", OperationCreateKeyPair, 0x00000002},
+		{"Register", OperationRegister, 0x00000003},
+		{"ReKey", OperationReKey, 0x00000004},
+		{"DeriveKey", OperationDeriveKey, 0x00000005},
+		{"GetAttributes", OperationGetAttributes, 0x0000000B},
+		{"GetAttributeList", OperationGetAttributeList, 0x0000000C},
+		{"AddAttribute", OperationAddAttribute, 0x0000000D},
+		{"ModifyAttribute", OperationModifyAttribute, 0x0000000E},
+		{"DeleteAttribute", OperationDeleteAttribute, 0x0000000F},
+		{"ObtainLease", OperationObtainLease, 0x00000010},
+		{"Revoke", OperationRevoke, 0x00000013},
+		{"Archive", OperationArchive, 0x00000015},
+		{"Recover", OperationRecover, 0x00000016},
+		{"Query", OperationQuery, 0x00000018},
+		{"Poll", OperationPoll, 0x0000001A},
+		{"DiscoverVersions", OperationDiscoverVersions, 0x0000001E},
+		{"Encrypt", OperationEncrypt, 0x0000001F},
+		{"Decrypt", OperationDecrypt, 0x00000020},
+		{"Sign", OperationSign, 0x00000021},
+		{"SignatureVerify", OperationSignatureVerify, 0x00000022},
+		{"MAC", OperationMAC, 0x00000023},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.value != tc.want {
+				t.Errorf("%s = 0x%08X, want 0x%08X", tc.name, tc.value, tc.want)
+			}
+		})
+	}
+
+	t.Run("no duplicate operation values across all operations", func(t *testing.T) {
+		all := []int{
+			OperationCreate, OperationCreateKeyPair, OperationRegister,
+			OperationReKey, OperationDeriveKey, OperationLocate, OperationCheck,
+			OperationGet, OperationGetAttributes, OperationGetAttributeList,
+			OperationAddAttribute, OperationModifyAttribute, OperationDeleteAttribute,
+			OperationObtainLease, OperationActivate, OperationRevoke, OperationDestroy,
+			OperationArchive, OperationRecover, OperationQuery, OperationPoll,
+			OperationDiscoverVersions, OperationEncrypt, OperationDecrypt,
+			OperationSign, OperationSignatureVerify, OperationMAC,
+		}
+		seen := make(map[int]bool)
+		for _, v := range all {
+			if seen[v] {
+				t.Errorf("duplicate operation value 0x%08X", v)
+			}
+			seen[v] = true
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// New tag constants — all in 0x42XXXX range
+// ---------------------------------------------------------------------------
+
+func TestNewTagValuesInKMIPRange(t *testing.T) {
+	newTags := map[string]int{
+		"TagPrivateKeyUniqueIdentifier": TagPrivateKeyUniqueIdentifier,
+		"TagPublicKeyUniqueIdentifier":  TagPublicKeyUniqueIdentifier,
+		"TagPublicKey":                  TagPublicKey,
+		"TagPrivateKey":                 TagPrivateKey,
+		"TagCertificate":                TagCertificate,
+		"TagCertificateType":            TagCertificateType,
+		"TagCertificateValue":           TagCertificateValue,
+		"TagData":                       TagData,
+		"TagIVCounterNonce":             TagIVCounterNonce,
+		"TagSignatureData":              TagSignatureData,
+		"TagMACData":                    TagMACData,
+		"TagValidityIndicator":          TagValidityIndicator,
+		"TagRevocationReason":           TagRevocationReason,
+		"TagRevocationReasonCode":       TagRevocationReasonCode,
+		"TagQueryFunction":              TagQueryFunction,
+		"TagState":                      TagState,
+		"TagDerivationMethod":           TagDerivationMethod,
+		"TagDerivationParameters":       TagDerivationParameters,
+		"TagDerivationData":             TagDerivationData,
+		"TagLeaseTime":                  TagLeaseTime,
+	}
+
+	t.Run("all new tags in 0x42XXXX range", func(t *testing.T) {
+		for name, value := range newTags {
+			if value < 0x420000 || value > 0x42FFFF {
+				t.Errorf("%s = 0x%06X is outside 0x42XXXX range", name, value)
+			}
+		}
+	})
+
+	t.Run("no duplicate values among new tags", func(t *testing.T) {
+		seen := make(map[int]string)
+		for name, value := range newTags {
+			if prev, ok := seen[value]; ok {
+				t.Errorf("duplicate tag value 0x%06X: %s and %s", value, prev, name)
+			}
+			seen[value] = name
+		}
+	})
+
+	// Spot-check specific hex values
+	t.Run("TagData = 0x420033", func(t *testing.T) {
+		if TagData != 0x420033 {
+			t.Errorf("got 0x%06X, want 0x420033", TagData)
+		}
+	})
+	t.Run("TagIVCounterNonce = 0x420047", func(t *testing.T) {
+		if TagIVCounterNonce != 0x420047 {
+			t.Errorf("got 0x%06X, want 0x420047", TagIVCounterNonce)
+		}
+	})
+	t.Run("TagSignatureData = 0x42004F", func(t *testing.T) {
+		if TagSignatureData != 0x42004F {
+			t.Errorf("got 0x%06X, want 0x42004F", TagSignatureData)
+		}
+	})
+	t.Run("TagMACData = 0x420051", func(t *testing.T) {
+		if TagMACData != 0x420051 {
+			t.Errorf("got 0x%06X, want 0x420051", TagMACData)
+		}
+	})
+	t.Run("TagValidityIndicator = 0x420098", func(t *testing.T) {
+		if TagValidityIndicator != 0x420098 {
+			t.Errorf("got 0x%06X, want 0x420098", TagValidityIndicator)
+		}
+	})
+	t.Run("TagPrivateKeyUniqueIdentifier = 0x420066", func(t *testing.T) {
+		if TagPrivateKeyUniqueIdentifier != 0x420066 {
+			t.Errorf("got 0x%06X, want 0x420066", TagPrivateKeyUniqueIdentifier)
+		}
+	})
+	t.Run("TagPublicKeyUniqueIdentifier = 0x42006F", func(t *testing.T) {
+		if TagPublicKeyUniqueIdentifier != 0x42006F {
+			t.Errorf("got 0x%06X, want 0x42006F", TagPublicKeyUniqueIdentifier)
+		}
+	})
+	t.Run("TagLeaseTime = 0x420049", func(t *testing.T) {
+		if TagLeaseTime != 0x420049 {
+			t.Errorf("got 0x%06X, want 0x420049", TagLeaseTime)
+		}
+	})
+}
+

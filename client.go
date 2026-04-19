@@ -202,6 +202,308 @@ func (c *KmipClient) FetchKey(name string) ([]byte, error) {
 	return result.KeyMaterial, nil
 }
 
+// CreateKeyPair creates a new asymmetric key pair on the server.
+func (c *KmipClient) CreateKeyPair(name string, algorithm int, length int32) (*CreateKeyPairResult, error) {
+	request := BuildCreateKeyPairRequest(name, algorithm, length)
+	responseData, err := c.send(request)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := ParseResponse(responseData)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCreateKeyPairPayload(resp.Payload), nil
+}
+
+// Register registers existing key material on the server.
+func (c *KmipClient) Register(objectType int, material []byte, name string, algorithm int, length int32) (*CreateResult, error) {
+	request := BuildRegisterRequest(objectType, material, name, algorithm, length)
+	responseData, err := c.send(request)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := ParseResponse(responseData)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCreatePayload(resp.Payload), nil
+}
+
+// ReKey re-keys an existing key on the server.
+func (c *KmipClient) ReKey(uniqueID string) (*ReKeyResult, error) {
+	request := BuildReKeyRequest(uniqueID)
+	responseData, err := c.send(request)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := ParseResponse(responseData)
+	if err != nil {
+		return nil, err
+	}
+	return ParseReKeyPayload(resp.Payload), nil
+}
+
+// DeriveKey derives a new key from an existing key.
+func (c *KmipClient) DeriveKey(uniqueID string, derivationData []byte, name string, length int32) (*DeriveKeyResult, error) {
+	request := BuildDeriveKeyRequest(uniqueID, derivationData, name, length)
+	responseData, err := c.send(request)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := ParseResponse(responseData)
+	if err != nil {
+		return nil, err
+	}
+	return ParseDeriveKeyPayload(resp.Payload), nil
+}
+
+// Check checks the status of a managed object.
+func (c *KmipClient) Check(uniqueID string) (*CheckResult, error) {
+	request := BuildCheckRequest(uniqueID)
+	responseData, err := c.send(request)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := ParseResponse(responseData)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCheckPayload(resp.Payload), nil
+}
+
+// GetAttributes fetches all attributes of a managed object.
+func (c *KmipClient) GetAttributes(uniqueID string) (*GetResult, error) {
+	request := BuildGetAttributesRequest(uniqueID)
+	responseData, err := c.send(request)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := ParseResponse(responseData)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetPayload(resp.Payload), nil
+}
+
+// GetAttributeList fetches the list of attribute names for a managed object.
+func (c *KmipClient) GetAttributeList(uniqueID string) ([]string, error) {
+	request := BuildGetAttributeListRequest(uniqueID)
+	responseData, err := c.send(request)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := ParseResponse(responseData)
+	if err != nil {
+		return nil, err
+	}
+	if resp.Payload == nil {
+		return nil, nil
+	}
+	attrs := FindChildren(resp.Payload, TagAttributeName)
+	names := make([]string, 0, len(attrs))
+	for _, attr := range attrs {
+		names = append(names, attr.StringValue())
+	}
+	return names, nil
+}
+
+// AddAttribute adds an attribute to a managed object.
+func (c *KmipClient) AddAttribute(uniqueID, name, value string) error {
+	request := BuildAddAttributeRequest(uniqueID, name, value)
+	responseData, err := c.send(request)
+	if err != nil {
+		return err
+	}
+	_, err = ParseResponse(responseData)
+	return err
+}
+
+// ModifyAttribute modifies an attribute of a managed object.
+func (c *KmipClient) ModifyAttribute(uniqueID, name, value string) error {
+	request := BuildModifyAttributeRequest(uniqueID, name, value)
+	responseData, err := c.send(request)
+	if err != nil {
+		return err
+	}
+	_, err = ParseResponse(responseData)
+	return err
+}
+
+// DeleteAttribute deletes an attribute from a managed object.
+func (c *KmipClient) DeleteAttribute(uniqueID, name string) error {
+	request := BuildDeleteAttributeRequest(uniqueID, name)
+	responseData, err := c.send(request)
+	if err != nil {
+		return err
+	}
+	_, err = ParseResponse(responseData)
+	return err
+}
+
+// ObtainLease obtains a lease for a managed object. Returns lease time in seconds.
+func (c *KmipClient) ObtainLease(uniqueID string) (int, error) {
+	request := BuildObtainLeaseRequest(uniqueID)
+	responseData, err := c.send(request)
+	if err != nil {
+		return 0, err
+	}
+	resp, err := ParseResponse(responseData)
+	if err != nil {
+		return 0, err
+	}
+	if resp.Payload == nil {
+		return 0, nil
+	}
+	lease := FindChild(resp.Payload, TagLeaseTime)
+	if lease != nil {
+		return int(lease.IntValue()), nil
+	}
+	return 0, nil
+}
+
+// Revoke revokes a managed object with the given reason code.
+func (c *KmipClient) Revoke(uniqueID string, reason int) error {
+	request := BuildRevokeRequest(uniqueID, reason)
+	responseData, err := c.send(request)
+	if err != nil {
+		return err
+	}
+	_, err = ParseResponse(responseData)
+	return err
+}
+
+// Archive archives a managed object.
+func (c *KmipClient) Archive(uniqueID string) error {
+	request := BuildArchiveRequest(uniqueID)
+	responseData, err := c.send(request)
+	if err != nil {
+		return err
+	}
+	_, err = ParseResponse(responseData)
+	return err
+}
+
+// Recover recovers an archived managed object.
+func (c *KmipClient) Recover(uniqueID string) error {
+	request := BuildRecoverRequest(uniqueID)
+	responseData, err := c.send(request)
+	if err != nil {
+		return err
+	}
+	_, err = ParseResponse(responseData)
+	return err
+}
+
+// Query queries the server for supported operations and object types.
+func (c *KmipClient) Query() (*QueryResult, error) {
+	request := BuildQueryRequest()
+	responseData, err := c.send(request)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := ParseResponse(responseData)
+	if err != nil {
+		return nil, err
+	}
+	return ParseQueryPayload(resp.Payload), nil
+}
+
+// Poll polls the server.
+func (c *KmipClient) Poll() error {
+	request := BuildPollRequest()
+	responseData, err := c.send(request)
+	if err != nil {
+		return err
+	}
+	_, err = ParseResponse(responseData)
+	return err
+}
+
+// DiscoverVersions discovers the KMIP versions supported by the server.
+func (c *KmipClient) DiscoverVersions() (*DiscoverVersionsResult, error) {
+	request := BuildDiscoverVersionsRequest()
+	responseData, err := c.send(request)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := ParseResponse(responseData)
+	if err != nil {
+		return nil, err
+	}
+	return ParseDiscoverVersionsPayload(resp.Payload), nil
+}
+
+// Encrypt encrypts data using a managed key.
+func (c *KmipClient) Encrypt(uniqueID string, data []byte) (*EncryptResult, error) {
+	request := BuildEncryptRequest(uniqueID, data)
+	responseData, err := c.send(request)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := ParseResponse(responseData)
+	if err != nil {
+		return nil, err
+	}
+	return ParseEncryptPayload(resp.Payload), nil
+}
+
+// Decrypt decrypts data using a managed key.
+func (c *KmipClient) Decrypt(uniqueID string, data []byte, nonce []byte) (*DecryptResult, error) {
+	request := BuildDecryptRequest(uniqueID, data, nonce)
+	responseData, err := c.send(request)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := ParseResponse(responseData)
+	if err != nil {
+		return nil, err
+	}
+	return ParseDecryptPayload(resp.Payload), nil
+}
+
+// Sign signs data using a managed key.
+func (c *KmipClient) Sign(uniqueID string, data []byte) (*SignResult, error) {
+	request := BuildSignRequest(uniqueID, data)
+	responseData, err := c.send(request)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := ParseResponse(responseData)
+	if err != nil {
+		return nil, err
+	}
+	return ParseSignPayload(resp.Payload), nil
+}
+
+// SignatureVerify verifies a signature using a managed key.
+func (c *KmipClient) SignatureVerify(uniqueID string, data []byte, signature []byte) (*SignatureVerifyResult, error) {
+	request := BuildSignatureVerifyRequest(uniqueID, data, signature)
+	responseData, err := c.send(request)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := ParseResponse(responseData)
+	if err != nil {
+		return nil, err
+	}
+	return ParseSignatureVerifyPayload(resp.Payload), nil
+}
+
+// MAC computes a MAC using a managed key.
+func (c *KmipClient) MAC(uniqueID string, data []byte) (*MACResult, error) {
+	request := BuildMACRequest(uniqueID, data)
+	responseData, err := c.send(request)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := ParseResponse(responseData)
+	if err != nil {
+		return nil, err
+	}
+	return ParseMACPayload(resp.Payload), nil
+}
+
 // Close shuts down the TLS connection.
 func (c *KmipClient) Close() error {
 	c.mu.Lock()

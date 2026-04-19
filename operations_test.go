@@ -571,3 +571,1159 @@ func findAttributeByName(tmpl *Item, name string) *Item {
 	}
 	return nil
 }
+
+// ---------------------------------------------------------------------------
+// Helper: decode a request and extract the batch item's operation + payload
+// ---------------------------------------------------------------------------
+
+func decodeRequest(t *testing.T, request []byte) (operation int, payload *Item) {
+	t.Helper()
+	decoded, err := DecodeTTLV(request, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Tag != TagRequestMessage {
+		t.Fatalf("tag = 0x%06X, want 0x%06X (RequestMessage)", decoded.Tag, TagRequestMessage)
+	}
+	batch := FindChild(decoded, TagBatchItem)
+	if batch == nil {
+		t.Fatal("BatchItem not found")
+	}
+	op := FindChild(batch, TagOperation)
+	if op == nil {
+		t.Fatal("Operation not found")
+	}
+	payload = FindChild(batch, TagRequestPayload)
+	return int(op.IntValue()), payload
+}
+
+// ---------------------------------------------------------------------------
+// New request builder tests
+// ---------------------------------------------------------------------------
+
+func TestBuildCreateKeyPairRequest(t *testing.T) {
+	t.Run("valid TTLV with CreateKeyPair operation", func(t *testing.T) {
+		op, payload := decodeRequest(t, BuildCreateKeyPairRequest("kp-1", AlgorithmRSA, 2048))
+		if op != OperationCreateKeyPair {
+			t.Errorf("operation = 0x%X, want 0x%X", op, OperationCreateKeyPair)
+		}
+		if payload == nil {
+			t.Fatal("payload is nil")
+		}
+	})
+
+	t.Run("template contains algorithm and length", func(t *testing.T) {
+		_, payload := decodeRequest(t, BuildCreateKeyPairRequest("kp-2", AlgorithmRSA, 4096))
+		tmpl := FindChild(payload, TagTemplateAttribute)
+		if tmpl == nil {
+			t.Fatal("TemplateAttribute not found")
+		}
+		algoAttr := findAttributeByName(tmpl, "Cryptographic Algorithm")
+		if algoAttr == nil {
+			t.Fatal("Cryptographic Algorithm not found")
+		}
+		algoVal := FindChild(algoAttr, TagAttributeValue)
+		if int(algoVal.IntValue()) != AlgorithmRSA {
+			t.Errorf("algorithm = 0x%X, want 0x%X", algoVal.IntValue(), AlgorithmRSA)
+		}
+		lenAttr := findAttributeByName(tmpl, "Cryptographic Length")
+		if lenAttr == nil {
+			t.Fatal("Cryptographic Length not found")
+		}
+		lenVal := FindChild(lenAttr, TagAttributeValue)
+		if lenVal.IntValue() != 4096 {
+			t.Errorf("length = %d, want 4096", lenVal.IntValue())
+		}
+	})
+
+	t.Run("template contains sign+verify usage mask", func(t *testing.T) {
+		_, payload := decodeRequest(t, BuildCreateKeyPairRequest("kp-3", AlgorithmRSA, 2048))
+		tmpl := FindChild(payload, TagTemplateAttribute)
+		usageAttr := findAttributeByName(tmpl, "Cryptographic Usage Mask")
+		if usageAttr == nil {
+			t.Fatal("Cryptographic Usage Mask not found")
+		}
+		usageVal := FindChild(usageAttr, TagAttributeValue)
+		expected := int32(UsageMaskSign | UsageMaskVerify)
+		if usageVal.IntValue() != expected {
+			t.Errorf("usage mask = 0x%X, want 0x%X", usageVal.IntValue(), expected)
+		}
+	})
+
+	t.Run("template contains name", func(t *testing.T) {
+		_, payload := decodeRequest(t, BuildCreateKeyPairRequest("my-keypair", AlgorithmECDSA, 256))
+		tmpl := FindChild(payload, TagTemplateAttribute)
+		nameAttr := findAttributeByName(tmpl, "Name")
+		if nameAttr == nil {
+			t.Fatal("Name attribute not found")
+		}
+		nameStruct := FindChild(nameAttr, TagAttributeValue)
+		nameValue := FindChild(nameStruct, TagNameValue)
+		if nameValue.StringValue() != "my-keypair" {
+			t.Errorf("name = %q, want %q", nameValue.StringValue(), "my-keypair")
+		}
+	})
+}
+
+func TestBuildRegisterRequest(t *testing.T) {
+	material := []byte{0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03, 0x04}
+
+	t.Run("valid TTLV with Register operation", func(t *testing.T) {
+		op, payload := decodeRequest(t, BuildRegisterRequest(ObjectTypeSymmetricKey, material, "reg-key", AlgorithmAES, 128))
+		if op != OperationRegister {
+			t.Errorf("operation = 0x%X, want 0x%X", op, OperationRegister)
+		}
+		if payload == nil {
+			t.Fatal("payload is nil")
+		}
+	})
+
+	t.Run("payload contains ObjectType", func(t *testing.T) {
+		_, payload := decodeRequest(t, BuildRegisterRequest(ObjectTypeSymmetricKey, material, "reg-key", AlgorithmAES, 128))
+		objType := FindChild(payload, TagObjectType)
+		if objType == nil {
+			t.Fatal("ObjectType not found")
+		}
+		if int(objType.IntValue()) != ObjectTypeSymmetricKey {
+			t.Errorf("ObjectType = 0x%X, want 0x%X", objType.IntValue(), ObjectTypeSymmetricKey)
+		}
+	})
+
+	t.Run("payload contains key material in SymmetricKey structure", func(t *testing.T) {
+		_, payload := decodeRequest(t, BuildRegisterRequest(ObjectTypeSymmetricKey, material, "reg-key", AlgorithmAES, 128))
+		symKey := FindChild(payload, TagSymmetricKey)
+		if symKey == nil {
+			t.Fatal("SymmetricKey not found")
+		}
+		keyBlock := FindChild(symKey, TagKeyBlock)
+		if keyBlock == nil {
+			t.Fatal("KeyBlock not found")
+		}
+		keyValue := FindChild(keyBlock, TagKeyValue)
+		if keyValue == nil {
+			t.Fatal("KeyValue not found")
+		}
+		keyMat := FindChild(keyValue, TagKeyMaterial)
+		if keyMat == nil {
+			t.Fatal("KeyMaterial not found")
+		}
+		if !bytes.Equal(keyMat.BytesValue(), material) {
+			t.Errorf("KeyMaterial = %x, want %x", keyMat.BytesValue(), material)
+		}
+	})
+
+	t.Run("includes name in template when provided", func(t *testing.T) {
+		_, payload := decodeRequest(t, BuildRegisterRequest(ObjectTypeSymmetricKey, material, "named-key", AlgorithmAES, 256))
+		tmpl := FindChild(payload, TagTemplateAttribute)
+		if tmpl == nil {
+			t.Fatal("TemplateAttribute not found when name is provided")
+		}
+		nameAttr := findAttributeByName(tmpl, "Name")
+		if nameAttr == nil {
+			t.Fatal("Name attribute not found")
+		}
+	})
+
+	t.Run("omits template when name is empty", func(t *testing.T) {
+		_, payload := decodeRequest(t, BuildRegisterRequest(ObjectTypeSymmetricKey, material, "", AlgorithmAES, 256))
+		tmpl := FindChild(payload, TagTemplateAttribute)
+		if tmpl != nil {
+			t.Error("TemplateAttribute should not be present when name is empty")
+		}
+	})
+}
+
+func TestBuildReKeyRequest(t *testing.T) {
+	t.Run("valid TTLV with ReKey operation", func(t *testing.T) {
+		op, payload := decodeRequest(t, BuildReKeyRequest("rekey-uid"))
+		if op != OperationReKey {
+			t.Errorf("operation = 0x%X, want 0x%X", op, OperationReKey)
+		}
+		uid := FindChild(payload, TagUniqueIdentifier)
+		if uid == nil {
+			t.Fatal("UniqueIdentifier not found")
+		}
+		if uid.StringValue() != "rekey-uid" {
+			t.Errorf("uid = %q, want %q", uid.StringValue(), "rekey-uid")
+		}
+	})
+}
+
+func TestBuildDeriveKeyRequest(t *testing.T) {
+	derivData := []byte{0x01, 0x02, 0x03, 0x04}
+
+	t.Run("valid TTLV with DeriveKey operation", func(t *testing.T) {
+		op, payload := decodeRequest(t, BuildDeriveKeyRequest("dk-uid", derivData, "derived-key", 256))
+		if op != OperationDeriveKey {
+			t.Errorf("operation = 0x%X, want 0x%X", op, OperationDeriveKey)
+		}
+		if payload == nil {
+			t.Fatal("payload is nil")
+		}
+	})
+
+	t.Run("contains UID", func(t *testing.T) {
+		_, payload := decodeRequest(t, BuildDeriveKeyRequest("dk-uid", derivData, "derived-key", 256))
+		uid := FindChild(payload, TagUniqueIdentifier)
+		if uid == nil || uid.StringValue() != "dk-uid" {
+			t.Errorf("uid = %v, want %q", uid, "dk-uid")
+		}
+	})
+
+	t.Run("contains derivation data", func(t *testing.T) {
+		_, payload := decodeRequest(t, BuildDeriveKeyRequest("dk-uid", derivData, "derived-key", 256))
+		derivParams := FindChild(payload, TagDerivationParameters)
+		if derivParams == nil {
+			t.Fatal("DerivationParameters not found")
+		}
+		data := FindChild(derivParams, TagDerivationData)
+		if data == nil {
+			t.Fatal("DerivationData not found")
+		}
+		if !bytes.Equal(data.BytesValue(), derivData) {
+			t.Errorf("derivation data = %x, want %x", data.BytesValue(), derivData)
+		}
+	})
+}
+
+func TestBuildCheckRequest(t *testing.T) {
+	t.Run("valid TTLV with Check operation and UID", func(t *testing.T) {
+		op, payload := decodeRequest(t, BuildCheckRequest("check-uid"))
+		if op != OperationCheck {
+			t.Errorf("operation = 0x%X, want 0x%X", op, OperationCheck)
+		}
+		uid := FindChild(payload, TagUniqueIdentifier)
+		if uid == nil || uid.StringValue() != "check-uid" {
+			t.Errorf("uid = %v, want %q", uid, "check-uid")
+		}
+	})
+}
+
+func TestBuildGetAttributesRequest(t *testing.T) {
+	t.Run("valid TTLV with GetAttributes operation and UID", func(t *testing.T) {
+		op, payload := decodeRequest(t, BuildGetAttributesRequest("ga-uid"))
+		if op != OperationGetAttributes {
+			t.Errorf("operation = 0x%X, want 0x%X", op, OperationGetAttributes)
+		}
+		uid := FindChild(payload, TagUniqueIdentifier)
+		if uid == nil || uid.StringValue() != "ga-uid" {
+			t.Errorf("uid = %v, want %q", uid, "ga-uid")
+		}
+	})
+}
+
+func TestBuildGetAttributeListRequest(t *testing.T) {
+	t.Run("valid TTLV with GetAttributeList operation and UID", func(t *testing.T) {
+		op, payload := decodeRequest(t, BuildGetAttributeListRequest("gal-uid"))
+		if op != OperationGetAttributeList {
+			t.Errorf("operation = 0x%X, want 0x%X", op, OperationGetAttributeList)
+		}
+		uid := FindChild(payload, TagUniqueIdentifier)
+		if uid == nil || uid.StringValue() != "gal-uid" {
+			t.Errorf("uid = %v, want %q", uid, "gal-uid")
+		}
+	})
+}
+
+func TestBuildAddAttributeRequest(t *testing.T) {
+	t.Run("valid TTLV with AddAttribute operation", func(t *testing.T) {
+		op, payload := decodeRequest(t, BuildAddAttributeRequest("aa-uid", "x-custom", "value-1"))
+		if op != OperationAddAttribute {
+			t.Errorf("operation = 0x%X, want 0x%X", op, OperationAddAttribute)
+		}
+		uid := FindChild(payload, TagUniqueIdentifier)
+		if uid == nil || uid.StringValue() != "aa-uid" {
+			t.Errorf("uid = %v, want %q", uid, "aa-uid")
+		}
+	})
+
+	t.Run("contains attribute name and value", func(t *testing.T) {
+		_, payload := decodeRequest(t, BuildAddAttributeRequest("aa-uid", "x-custom", "value-1"))
+		attr := FindChild(payload, TagAttribute)
+		if attr == nil {
+			t.Fatal("Attribute not found")
+		}
+		attrName := FindChild(attr, TagAttributeName)
+		if attrName == nil || attrName.StringValue() != "x-custom" {
+			t.Errorf("attribute name = %v, want %q", attrName, "x-custom")
+		}
+		attrValue := FindChild(attr, TagAttributeValue)
+		if attrValue == nil || attrValue.StringValue() != "value-1" {
+			t.Errorf("attribute value = %v, want %q", attrValue, "value-1")
+		}
+	})
+}
+
+func TestBuildModifyAttributeRequest(t *testing.T) {
+	t.Run("valid TTLV with ModifyAttribute operation", func(t *testing.T) {
+		op, payload := decodeRequest(t, BuildModifyAttributeRequest("ma-uid", "x-label", "new-value"))
+		if op != OperationModifyAttribute {
+			t.Errorf("operation = 0x%X, want 0x%X", op, OperationModifyAttribute)
+		}
+		uid := FindChild(payload, TagUniqueIdentifier)
+		if uid == nil || uid.StringValue() != "ma-uid" {
+			t.Errorf("uid = %v, want %q", uid, "ma-uid")
+		}
+		attr := FindChild(payload, TagAttribute)
+		if attr == nil {
+			t.Fatal("Attribute not found")
+		}
+		attrName := FindChild(attr, TagAttributeName)
+		if attrName.StringValue() != "x-label" {
+			t.Errorf("attr name = %q, want %q", attrName.StringValue(), "x-label")
+		}
+		attrValue := FindChild(attr, TagAttributeValue)
+		if attrValue.StringValue() != "new-value" {
+			t.Errorf("attr value = %q, want %q", attrValue.StringValue(), "new-value")
+		}
+	})
+}
+
+func TestBuildDeleteAttributeRequest(t *testing.T) {
+	t.Run("valid TTLV with DeleteAttribute operation", func(t *testing.T) {
+		op, payload := decodeRequest(t, BuildDeleteAttributeRequest("da-uid", "x-old"))
+		if op != OperationDeleteAttribute {
+			t.Errorf("operation = 0x%X, want 0x%X", op, OperationDeleteAttribute)
+		}
+		uid := FindChild(payload, TagUniqueIdentifier)
+		if uid == nil || uid.StringValue() != "da-uid" {
+			t.Errorf("uid = %v, want %q", uid, "da-uid")
+		}
+		attr := FindChild(payload, TagAttribute)
+		if attr == nil {
+			t.Fatal("Attribute not found")
+		}
+		attrName := FindChild(attr, TagAttributeName)
+		if attrName.StringValue() != "x-old" {
+			t.Errorf("attr name = %q, want %q", attrName.StringValue(), "x-old")
+		}
+	})
+}
+
+func TestBuildObtainLeaseRequest(t *testing.T) {
+	t.Run("valid TTLV with ObtainLease operation and UID", func(t *testing.T) {
+		op, payload := decodeRequest(t, BuildObtainLeaseRequest("ol-uid"))
+		if op != OperationObtainLease {
+			t.Errorf("operation = 0x%X, want 0x%X", op, OperationObtainLease)
+		}
+		uid := FindChild(payload, TagUniqueIdentifier)
+		if uid == nil || uid.StringValue() != "ol-uid" {
+			t.Errorf("uid = %v, want %q", uid, "ol-uid")
+		}
+	})
+}
+
+func TestBuildRevokeRequest(t *testing.T) {
+	t.Run("valid TTLV with Revoke operation", func(t *testing.T) {
+		op, payload := decodeRequest(t, BuildRevokeRequest("rev-uid", 1))
+		if op != OperationRevoke {
+			t.Errorf("operation = 0x%X, want 0x%X", op, OperationRevoke)
+		}
+		uid := FindChild(payload, TagUniqueIdentifier)
+		if uid == nil || uid.StringValue() != "rev-uid" {
+			t.Errorf("uid = %v, want %q", uid, "rev-uid")
+		}
+	})
+
+	t.Run("contains revocation reason", func(t *testing.T) {
+		_, payload := decodeRequest(t, BuildRevokeRequest("rev-uid", 5))
+		revReason := FindChild(payload, TagRevocationReason)
+		if revReason == nil {
+			t.Fatal("RevocationReason not found")
+		}
+		code := FindChild(revReason, TagRevocationReasonCode)
+		if code == nil {
+			t.Fatal("RevocationReasonCode not found")
+		}
+		if int(code.IntValue()) != 5 {
+			t.Errorf("reason code = %d, want 5", code.IntValue())
+		}
+	})
+}
+
+func TestBuildArchiveRequest(t *testing.T) {
+	t.Run("valid TTLV with Archive operation and UID", func(t *testing.T) {
+		op, payload := decodeRequest(t, BuildArchiveRequest("arc-uid"))
+		if op != OperationArchive {
+			t.Errorf("operation = 0x%X, want 0x%X", op, OperationArchive)
+		}
+		uid := FindChild(payload, TagUniqueIdentifier)
+		if uid == nil || uid.StringValue() != "arc-uid" {
+			t.Errorf("uid = %v, want %q", uid, "arc-uid")
+		}
+	})
+}
+
+func TestBuildRecoverRequest(t *testing.T) {
+	t.Run("valid TTLV with Recover operation and UID", func(t *testing.T) {
+		op, payload := decodeRequest(t, BuildRecoverRequest("rec-uid"))
+		if op != OperationRecover {
+			t.Errorf("operation = 0x%X, want 0x%X", op, OperationRecover)
+		}
+		uid := FindChild(payload, TagUniqueIdentifier)
+		if uid == nil || uid.StringValue() != "rec-uid" {
+			t.Errorf("uid = %v, want %q", uid, "rec-uid")
+		}
+	})
+}
+
+func TestBuildQueryRequest(t *testing.T) {
+	t.Run("valid TTLV with Query operation", func(t *testing.T) {
+		op, payload := decodeRequest(t, BuildQueryRequest())
+		if op != OperationQuery {
+			t.Errorf("operation = 0x%X, want 0x%X", op, OperationQuery)
+		}
+		if payload == nil {
+			t.Fatal("payload is nil")
+		}
+	})
+}
+
+func TestBuildPollRequest(t *testing.T) {
+	t.Run("valid TTLV with Poll operation", func(t *testing.T) {
+		op, payload := decodeRequest(t, BuildPollRequest())
+		if op != OperationPoll {
+			t.Errorf("operation = 0x%X, want 0x%X", op, OperationPoll)
+		}
+		if payload == nil {
+			t.Fatal("payload is nil")
+		}
+	})
+}
+
+func TestBuildDiscoverVersionsRequest(t *testing.T) {
+	t.Run("valid TTLV with DiscoverVersions operation", func(t *testing.T) {
+		op, payload := decodeRequest(t, BuildDiscoverVersionsRequest())
+		if op != OperationDiscoverVersions {
+			t.Errorf("operation = 0x%X, want 0x%X", op, OperationDiscoverVersions)
+		}
+		if payload == nil {
+			t.Fatal("payload is nil")
+		}
+	})
+}
+
+func TestBuildEncryptRequest(t *testing.T) {
+	t.Run("valid TTLV with Encrypt operation", func(t *testing.T) {
+		op, payload := decodeRequest(t, BuildEncryptRequest("enc-uid", []byte("plaintext")))
+		if op != OperationEncrypt {
+			t.Errorf("operation = 0x%X, want 0x%X", op, OperationEncrypt)
+		}
+		uid := FindChild(payload, TagUniqueIdentifier)
+		if uid == nil || uid.StringValue() != "enc-uid" {
+			t.Errorf("uid = %v, want %q", uid, "enc-uid")
+		}
+	})
+
+	t.Run("contains Data field", func(t *testing.T) {
+		_, payload := decodeRequest(t, BuildEncryptRequest("enc-uid", []byte("hello")))
+		data := FindChild(payload, TagData)
+		if data == nil {
+			t.Fatal("Data not found")
+		}
+		if !bytes.Equal(data.BytesValue(), []byte("hello")) {
+			t.Errorf("Data = %x, want %x", data.BytesValue(), []byte("hello"))
+		}
+	})
+}
+
+func TestBuildDecryptRequest(t *testing.T) {
+	t.Run("valid TTLV with Decrypt operation", func(t *testing.T) {
+		op, payload := decodeRequest(t, BuildDecryptRequest("dec-uid", []byte("ciphertext"), []byte("nonce12")))
+		if op != OperationDecrypt {
+			t.Errorf("operation = 0x%X, want 0x%X", op, OperationDecrypt)
+		}
+		uid := FindChild(payload, TagUniqueIdentifier)
+		if uid == nil || uid.StringValue() != "dec-uid" {
+			t.Errorf("uid = %v, want %q", uid, "dec-uid")
+		}
+	})
+
+	t.Run("contains Data and IVCounterNonce", func(t *testing.T) {
+		_, payload := decodeRequest(t, BuildDecryptRequest("dec-uid", []byte("ct"), []byte("iv123")))
+		data := FindChild(payload, TagData)
+		if data == nil {
+			t.Fatal("Data not found")
+		}
+		if !bytes.Equal(data.BytesValue(), []byte("ct")) {
+			t.Errorf("Data = %x, want %x", data.BytesValue(), []byte("ct"))
+		}
+		nonce := FindChild(payload, TagIVCounterNonce)
+		if nonce == nil {
+			t.Fatal("IVCounterNonce not found")
+		}
+		if !bytes.Equal(nonce.BytesValue(), []byte("iv123")) {
+			t.Errorf("nonce = %x, want %x", nonce.BytesValue(), []byte("iv123"))
+		}
+	})
+
+	t.Run("omits IVCounterNonce when nil", func(t *testing.T) {
+		_, payload := decodeRequest(t, BuildDecryptRequest("dec-uid", []byte("ct"), nil))
+		nonce := FindChild(payload, TagIVCounterNonce)
+		if nonce != nil {
+			t.Error("IVCounterNonce should be omitted when nil")
+		}
+	})
+}
+
+func TestBuildSignRequest(t *testing.T) {
+	t.Run("valid TTLV with Sign operation", func(t *testing.T) {
+		op, payload := decodeRequest(t, BuildSignRequest("sign-uid", []byte("message")))
+		if op != OperationSign {
+			t.Errorf("operation = 0x%X, want 0x%X", op, OperationSign)
+		}
+		uid := FindChild(payload, TagUniqueIdentifier)
+		if uid == nil || uid.StringValue() != "sign-uid" {
+			t.Errorf("uid = %v, want %q", uid, "sign-uid")
+		}
+		data := FindChild(payload, TagData)
+		if data == nil {
+			t.Fatal("Data not found")
+		}
+		if !bytes.Equal(data.BytesValue(), []byte("message")) {
+			t.Errorf("Data = %x, want %x", data.BytesValue(), []byte("message"))
+		}
+	})
+}
+
+func TestBuildSignatureVerifyRequest(t *testing.T) {
+	t.Run("valid TTLV with SignatureVerify operation", func(t *testing.T) {
+		op, payload := decodeRequest(t, BuildSignatureVerifyRequest("sv-uid", []byte("msg"), []byte("sig")))
+		if op != OperationSignatureVerify {
+			t.Errorf("operation = 0x%X, want 0x%X", op, OperationSignatureVerify)
+		}
+		uid := FindChild(payload, TagUniqueIdentifier)
+		if uid == nil || uid.StringValue() != "sv-uid" {
+			t.Errorf("uid = %v, want %q", uid, "sv-uid")
+		}
+	})
+
+	t.Run("contains Data and SignatureData", func(t *testing.T) {
+		_, payload := decodeRequest(t, BuildSignatureVerifyRequest("sv-uid", []byte("msg"), []byte("sig")))
+		data := FindChild(payload, TagData)
+		if data == nil {
+			t.Fatal("Data not found")
+		}
+		if !bytes.Equal(data.BytesValue(), []byte("msg")) {
+			t.Errorf("Data = %x, want %x", data.BytesValue(), []byte("msg"))
+		}
+		sigData := FindChild(payload, TagSignatureData)
+		if sigData == nil {
+			t.Fatal("SignatureData not found")
+		}
+		if !bytes.Equal(sigData.BytesValue(), []byte("sig")) {
+			t.Errorf("SignatureData = %x, want %x", sigData.BytesValue(), []byte("sig"))
+		}
+	})
+}
+
+func TestBuildMACRequest(t *testing.T) {
+	t.Run("valid TTLV with MAC operation", func(t *testing.T) {
+		op, payload := decodeRequest(t, BuildMACRequest("mac-uid", []byte("data")))
+		if op != OperationMAC {
+			t.Errorf("operation = 0x%X, want 0x%X", op, OperationMAC)
+		}
+		uid := FindChild(payload, TagUniqueIdentifier)
+		if uid == nil || uid.StringValue() != "mac-uid" {
+			t.Errorf("uid = %v, want %q", uid, "mac-uid")
+		}
+		data := FindChild(payload, TagData)
+		if data == nil {
+			t.Fatal("Data not found")
+		}
+		if !bytes.Equal(data.BytesValue(), []byte("data")) {
+			t.Errorf("Data = %x, want %x", data.BytesValue(), []byte("data"))
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// New response parser tests
+// ---------------------------------------------------------------------------
+
+func TestParseCheckPayload(t *testing.T) {
+	t.Run("extracts UID from payload", func(t *testing.T) {
+		payloadBytes := EncodeStructure(TagResponsePayload,
+			EncodeTextString(TagUniqueIdentifier, "check-uid-1"),
+		)
+		payload, err := DecodeTTLV(payloadBytes, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		result := ParseCheckPayload(payload)
+		if result.UniqueIdentifier != "check-uid-1" {
+			t.Errorf("uid = %q, want %q", result.UniqueIdentifier, "check-uid-1")
+		}
+	})
+
+	t.Run("nil payload returns empty result", func(t *testing.T) {
+		result := ParseCheckPayload(nil)
+		if result.UniqueIdentifier != "" {
+			t.Errorf("uid = %q, want empty", result.UniqueIdentifier)
+		}
+	})
+}
+
+func TestParseReKeyPayload(t *testing.T) {
+	t.Run("extracts UID from payload", func(t *testing.T) {
+		payloadBytes := EncodeStructure(TagResponsePayload,
+			EncodeTextString(TagUniqueIdentifier, "rekey-new-uid"),
+		)
+		payload, err := DecodeTTLV(payloadBytes, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		result := ParseReKeyPayload(payload)
+		if result.UniqueIdentifier != "rekey-new-uid" {
+			t.Errorf("uid = %q, want %q", result.UniqueIdentifier, "rekey-new-uid")
+		}
+	})
+
+	t.Run("nil payload returns empty result", func(t *testing.T) {
+		result := ParseReKeyPayload(nil)
+		if result.UniqueIdentifier != "" {
+			t.Errorf("uid = %q, want empty", result.UniqueIdentifier)
+		}
+	})
+}
+
+func TestParseEncryptPayload(t *testing.T) {
+	t.Run("extracts Data and Nonce", func(t *testing.T) {
+		payloadBytes := EncodeStructure(TagResponsePayload,
+			EncodeByteString(TagData, []byte("ciphertext")),
+			EncodeByteString(TagIVCounterNonce, []byte("nonce12bytes")),
+		)
+		payload, err := DecodeTTLV(payloadBytes, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		result := ParseEncryptPayload(payload)
+		if !bytes.Equal(result.Data, []byte("ciphertext")) {
+			t.Errorf("Data = %x, want %x", result.Data, []byte("ciphertext"))
+		}
+		if !bytes.Equal(result.Nonce, []byte("nonce12bytes")) {
+			t.Errorf("Nonce = %x, want %x", result.Nonce, []byte("nonce12bytes"))
+		}
+	})
+
+	t.Run("extracts Data without Nonce", func(t *testing.T) {
+		payloadBytes := EncodeStructure(TagResponsePayload,
+			EncodeByteString(TagData, []byte("ct-only")),
+		)
+		payload, err := DecodeTTLV(payloadBytes, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		result := ParseEncryptPayload(payload)
+		if !bytes.Equal(result.Data, []byte("ct-only")) {
+			t.Errorf("Data = %x, want %x", result.Data, []byte("ct-only"))
+		}
+		if result.Nonce != nil {
+			t.Errorf("Nonce = %x, want nil", result.Nonce)
+		}
+	})
+
+	t.Run("nil payload returns empty result", func(t *testing.T) {
+		result := ParseEncryptPayload(nil)
+		if result.Data != nil {
+			t.Errorf("Data = %x, want nil", result.Data)
+		}
+		if result.Nonce != nil {
+			t.Errorf("Nonce = %x, want nil", result.Nonce)
+		}
+	})
+}
+
+func TestParseDecryptPayload(t *testing.T) {
+	t.Run("extracts Data", func(t *testing.T) {
+		payloadBytes := EncodeStructure(TagResponsePayload,
+			EncodeByteString(TagData, []byte("plaintext")),
+		)
+		payload, err := DecodeTTLV(payloadBytes, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		result := ParseDecryptPayload(payload)
+		if !bytes.Equal(result.Data, []byte("plaintext")) {
+			t.Errorf("Data = %x, want %x", result.Data, []byte("plaintext"))
+		}
+	})
+
+	t.Run("nil payload returns empty result", func(t *testing.T) {
+		result := ParseDecryptPayload(nil)
+		if result.Data != nil {
+			t.Errorf("Data = %x, want nil", result.Data)
+		}
+	})
+}
+
+func TestParseSignPayload(t *testing.T) {
+	t.Run("extracts SignatureData", func(t *testing.T) {
+		payloadBytes := EncodeStructure(TagResponsePayload,
+			EncodeByteString(TagSignatureData, []byte("signature-bytes")),
+		)
+		payload, err := DecodeTTLV(payloadBytes, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		result := ParseSignPayload(payload)
+		if !bytes.Equal(result.SignatureData, []byte("signature-bytes")) {
+			t.Errorf("SignatureData = %x, want %x", result.SignatureData, []byte("signature-bytes"))
+		}
+	})
+
+	t.Run("nil payload returns empty result", func(t *testing.T) {
+		result := ParseSignPayload(nil)
+		if result.SignatureData != nil {
+			t.Errorf("SignatureData = %x, want nil", result.SignatureData)
+		}
+	})
+}
+
+func TestParseSignatureVerifyPayload(t *testing.T) {
+	t.Run("valid when indicator is 0", func(t *testing.T) {
+		payloadBytes := EncodeStructure(TagResponsePayload,
+			EncodeEnum(TagValidityIndicator, 0),
+		)
+		payload, err := DecodeTTLV(payloadBytes, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		result := ParseSignatureVerifyPayload(payload)
+		if !result.Valid {
+			t.Error("Valid = false, want true (indicator=0)")
+		}
+	})
+
+	t.Run("invalid when indicator is 1", func(t *testing.T) {
+		payloadBytes := EncodeStructure(TagResponsePayload,
+			EncodeEnum(TagValidityIndicator, 1),
+		)
+		payload, err := DecodeTTLV(payloadBytes, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		result := ParseSignatureVerifyPayload(payload)
+		if result.Valid {
+			t.Error("Valid = true, want false (indicator=1)")
+		}
+	})
+
+	t.Run("nil payload returns empty result (Valid=false)", func(t *testing.T) {
+		result := ParseSignatureVerifyPayload(nil)
+		if result.Valid {
+			t.Error("Valid = true, want false for nil payload")
+		}
+	})
+}
+
+func TestParseMACPayload(t *testing.T) {
+	t.Run("extracts MACData", func(t *testing.T) {
+		payloadBytes := EncodeStructure(TagResponsePayload,
+			EncodeByteString(TagMACData, []byte("mac-output")),
+		)
+		payload, err := DecodeTTLV(payloadBytes, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		result := ParseMACPayload(payload)
+		if !bytes.Equal(result.MACData, []byte("mac-output")) {
+			t.Errorf("MACData = %x, want %x", result.MACData, []byte("mac-output"))
+		}
+	})
+
+	t.Run("nil payload returns empty result", func(t *testing.T) {
+		result := ParseMACPayload(nil)
+		if result.MACData != nil {
+			t.Errorf("MACData = %x, want nil", result.MACData)
+		}
+	})
+}
+
+func TestParseQueryPayload(t *testing.T) {
+	t.Run("extracts operations and object types", func(t *testing.T) {
+		payloadBytes := EncodeStructure(TagResponsePayload,
+			EncodeEnum(TagOperation, OperationCreate),
+			EncodeEnum(TagOperation, OperationGet),
+			EncodeEnum(TagOperation, OperationDestroy),
+			EncodeEnum(TagObjectType, ObjectTypeSymmetricKey),
+			EncodeEnum(TagObjectType, ObjectTypePublicKey),
+		)
+		payload, err := DecodeTTLV(payloadBytes, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		result := ParseQueryPayload(payload)
+		if len(result.Operations) != 3 {
+			t.Fatalf("operations count = %d, want 3", len(result.Operations))
+		}
+		if result.Operations[0] != OperationCreate {
+			t.Errorf("ops[0] = 0x%X, want 0x%X", result.Operations[0], OperationCreate)
+		}
+		if result.Operations[1] != OperationGet {
+			t.Errorf("ops[1] = 0x%X, want 0x%X", result.Operations[1], OperationGet)
+		}
+		if result.Operations[2] != OperationDestroy {
+			t.Errorf("ops[2] = 0x%X, want 0x%X", result.Operations[2], OperationDestroy)
+		}
+		if len(result.ObjectTypes) != 2 {
+			t.Fatalf("object types count = %d, want 2", len(result.ObjectTypes))
+		}
+		if result.ObjectTypes[0] != ObjectTypeSymmetricKey {
+			t.Errorf("types[0] = 0x%X, want 0x%X", result.ObjectTypes[0], ObjectTypeSymmetricKey)
+		}
+		if result.ObjectTypes[1] != ObjectTypePublicKey {
+			t.Errorf("types[1] = 0x%X, want 0x%X", result.ObjectTypes[1], ObjectTypePublicKey)
+		}
+	})
+
+	t.Run("nil payload returns empty slices", func(t *testing.T) {
+		result := ParseQueryPayload(nil)
+		if len(result.Operations) != 0 {
+			t.Errorf("operations count = %d, want 0", len(result.Operations))
+		}
+		if len(result.ObjectTypes) != 0 {
+			t.Errorf("object types count = %d, want 0", len(result.ObjectTypes))
+		}
+	})
+}
+
+func TestParseDiscoverVersionsPayload(t *testing.T) {
+	t.Run("extracts versions", func(t *testing.T) {
+		payloadBytes := EncodeStructure(TagResponsePayload,
+			EncodeStructure(TagProtocolVersion,
+				EncodeInteger(TagProtocolVersionMajor, 1),
+				EncodeInteger(TagProtocolVersionMinor, 4),
+			),
+			EncodeStructure(TagProtocolVersion,
+				EncodeInteger(TagProtocolVersionMajor, 1),
+				EncodeInteger(TagProtocolVersionMinor, 3),
+			),
+		)
+		payload, err := DecodeTTLV(payloadBytes, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		result := ParseDiscoverVersionsPayload(payload)
+		if len(result.Versions) != 2 {
+			t.Fatalf("versions count = %d, want 2", len(result.Versions))
+		}
+		if result.Versions[0].Major != 1 || result.Versions[0].Minor != 4 {
+			t.Errorf("versions[0] = %d.%d, want 1.4", result.Versions[0].Major, result.Versions[0].Minor)
+		}
+		if result.Versions[1].Major != 1 || result.Versions[1].Minor != 3 {
+			t.Errorf("versions[1] = %d.%d, want 1.3", result.Versions[1].Major, result.Versions[1].Minor)
+		}
+	})
+
+	t.Run("nil payload returns empty result", func(t *testing.T) {
+		result := ParseDiscoverVersionsPayload(nil)
+		if len(result.Versions) != 0 {
+			t.Errorf("versions count = %d, want 0", len(result.Versions))
+		}
+	})
+}
+
+func TestParseDeriveKeyPayload(t *testing.T) {
+	t.Run("extracts UID", func(t *testing.T) {
+		payloadBytes := EncodeStructure(TagResponsePayload,
+			EncodeTextString(TagUniqueIdentifier, "derived-uid-42"),
+		)
+		payload, err := DecodeTTLV(payloadBytes, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		result := ParseDeriveKeyPayload(payload)
+		if result.UniqueIdentifier != "derived-uid-42" {
+			t.Errorf("uid = %q, want %q", result.UniqueIdentifier, "derived-uid-42")
+		}
+	})
+
+	t.Run("nil payload returns empty result", func(t *testing.T) {
+		result := ParseDeriveKeyPayload(nil)
+		if result.UniqueIdentifier != "" {
+			t.Errorf("uid = %q, want empty", result.UniqueIdentifier)
+		}
+	})
+}
+
+func TestParseCreateKeyPairPayload(t *testing.T) {
+	t.Run("extracts private and public UIDs", func(t *testing.T) {
+		payloadBytes := EncodeStructure(TagResponsePayload,
+			EncodeTextString(TagPrivateKeyUniqueIdentifier, "priv-uid-1"),
+			EncodeTextString(TagPublicKeyUniqueIdentifier, "pub-uid-1"),
+		)
+		payload, err := DecodeTTLV(payloadBytes, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		result := ParseCreateKeyPairPayload(payload)
+		if result.PrivateKeyUID != "priv-uid-1" {
+			t.Errorf("PrivateKeyUID = %q, want %q", result.PrivateKeyUID, "priv-uid-1")
+		}
+		if result.PublicKeyUID != "pub-uid-1" {
+			t.Errorf("PublicKeyUID = %q, want %q", result.PublicKeyUID, "pub-uid-1")
+		}
+	})
+
+	t.Run("nil payload returns empty result", func(t *testing.T) {
+		result := ParseCreateKeyPairPayload(nil)
+		if result.PrivateKeyUID != "" {
+			t.Errorf("PrivateKeyUID = %q, want empty", result.PrivateKeyUID)
+		}
+		if result.PublicKeyUID != "" {
+			t.Errorf("PublicKeyUID = %q, want empty", result.PublicKeyUID)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Round-trip tests for new operations
+// ---------------------------------------------------------------------------
+
+func TestRoundTrip_Encrypt(t *testing.T) {
+	request := BuildEncryptRequest("uid-1", []byte("hello"))
+	decoded, err := DecodeTTLV(request, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Tag != TagRequestMessage {
+		t.Errorf("tag = 0x%06X, want 0x%06X", decoded.Tag, TagRequestMessage)
+	}
+	batch := FindChild(decoded, TagBatchItem)
+	op := FindChild(batch, TagOperation)
+	if int(op.IntValue()) != OperationEncrypt {
+		t.Errorf("operation = 0x%X, want 0x%X", op.IntValue(), OperationEncrypt)
+	}
+	payload := FindChild(batch, TagRequestPayload)
+	uid := FindChild(payload, TagUniqueIdentifier)
+	if uid.StringValue() != "uid-1" {
+		t.Errorf("uid = %q, want %q", uid.StringValue(), "uid-1")
+	}
+	data := FindChild(payload, TagData)
+	if !bytes.Equal(data.BytesValue(), []byte("hello")) {
+		t.Errorf("data = %x, want %x", data.BytesValue(), []byte("hello"))
+	}
+}
+
+func TestRoundTrip_Decrypt(t *testing.T) {
+	request := BuildDecryptRequest("uid-2", []byte("ciphertext"), []byte("nonce"))
+	decoded, err := DecodeTTLV(request, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch := FindChild(decoded, TagBatchItem)
+	op := FindChild(batch, TagOperation)
+	if int(op.IntValue()) != OperationDecrypt {
+		t.Errorf("operation = 0x%X, want 0x%X", op.IntValue(), OperationDecrypt)
+	}
+	payload := FindChild(batch, TagRequestPayload)
+	nonce := FindChild(payload, TagIVCounterNonce)
+	if !bytes.Equal(nonce.BytesValue(), []byte("nonce")) {
+		t.Errorf("nonce = %x, want %x", nonce.BytesValue(), []byte("nonce"))
+	}
+}
+
+func TestRoundTrip_Sign(t *testing.T) {
+	request := BuildSignRequest("uid-3", []byte("tosign"))
+	decoded, err := DecodeTTLV(request, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch := FindChild(decoded, TagBatchItem)
+	op := FindChild(batch, TagOperation)
+	if int(op.IntValue()) != OperationSign {
+		t.Errorf("operation = 0x%X, want 0x%X", op.IntValue(), OperationSign)
+	}
+}
+
+func TestRoundTrip_MAC(t *testing.T) {
+	request := BuildMACRequest("uid-4", []byte("macdata"))
+	decoded, err := DecodeTTLV(request, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch := FindChild(decoded, TagBatchItem)
+	op := FindChild(batch, TagOperation)
+	if int(op.IntValue()) != OperationMAC {
+		t.Errorf("operation = 0x%X, want 0x%X", op.IntValue(), OperationMAC)
+	}
+}
+
+func TestRoundTrip_CreateKeyPair(t *testing.T) {
+	request := BuildCreateKeyPairRequest("kp-rt", AlgorithmRSA, 2048)
+	decoded, err := DecodeTTLV(request, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch := FindChild(decoded, TagBatchItem)
+	op := FindChild(batch, TagOperation)
+	if int(op.IntValue()) != OperationCreateKeyPair {
+		t.Errorf("operation = 0x%X, want 0x%X", op.IntValue(), OperationCreateKeyPair)
+	}
+}
+
+func TestRoundTrip_Register(t *testing.T) {
+	material := []byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11}
+	request := BuildRegisterRequest(ObjectTypeSymmetricKey, material, "reg-rt", AlgorithmAES, 128)
+	decoded, err := DecodeTTLV(request, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch := FindChild(decoded, TagBatchItem)
+	op := FindChild(batch, TagOperation)
+	if int(op.IntValue()) != OperationRegister {
+		t.Errorf("operation = 0x%X, want 0x%X", op.IntValue(), OperationRegister)
+	}
+}
+
+func TestRoundTrip_DeriveKey(t *testing.T) {
+	request := BuildDeriveKeyRequest("dk-rt", []byte("salt"), "derived", 256)
+	decoded, err := DecodeTTLV(request, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch := FindChild(decoded, TagBatchItem)
+	op := FindChild(batch, TagOperation)
+	if int(op.IntValue()) != OperationDeriveKey {
+		t.Errorf("operation = 0x%X, want 0x%X", op.IntValue(), OperationDeriveKey)
+	}
+}
+
+func TestRoundTrip_Revoke(t *testing.T) {
+	request := BuildRevokeRequest("rev-rt", 3)
+	decoded, err := DecodeTTLV(request, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch := FindChild(decoded, TagBatchItem)
+	op := FindChild(batch, TagOperation)
+	if int(op.IntValue()) != OperationRevoke {
+		t.Errorf("operation = 0x%X, want 0x%X", op.IntValue(), OperationRevoke)
+	}
+	payload := FindChild(batch, TagRequestPayload)
+	revReason := FindChild(payload, TagRevocationReason)
+	code := FindChild(revReason, TagRevocationReasonCode)
+	if int(code.IntValue()) != 3 {
+		t.Errorf("reason code = %d, want 3", code.IntValue())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ParseLocatePayload nil safety (existing tests covered non-nil; add nil)
+// ---------------------------------------------------------------------------
+
+func TestParseLocatePayload_Nil(t *testing.T) {
+	result := ParseLocatePayload(nil)
+	if len(result.UniqueIdentifiers) != 0 {
+		t.Errorf("count = %d, want 0", len(result.UniqueIdentifiers))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Activate and Destroy request builders (verify operation)
+// ---------------------------------------------------------------------------
+
+func TestBuildActivateRequest(t *testing.T) {
+	t.Run("valid TTLV with Activate operation and UID", func(t *testing.T) {
+		op, payload := decodeRequest(t, BuildActivateRequest("act-uid"))
+		if op != OperationActivate {
+			t.Errorf("operation = 0x%X, want 0x%X", op, OperationActivate)
+		}
+		uid := FindChild(payload, TagUniqueIdentifier)
+		if uid == nil || uid.StringValue() != "act-uid" {
+			t.Errorf("uid = %v, want %q", uid, "act-uid")
+		}
+	})
+}
+
+func TestBuildDestroyRequest(t *testing.T) {
+	t.Run("valid TTLV with Destroy operation and UID", func(t *testing.T) {
+		op, payload := decodeRequest(t, BuildDestroyRequest("del-uid"))
+		if op != OperationDestroy {
+			t.Errorf("operation = 0x%X, want 0x%X", op, OperationDestroy)
+		}
+		uid := FindChild(payload, TagUniqueIdentifier)
+		if uid == nil || uid.StringValue() != "del-uid" {
+			t.Errorf("uid = %v, want %q", uid, "del-uid")
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// ResolveAlgorithm tests
+// ---------------------------------------------------------------------------
+
+func TestResolveAlgorithm(t *testing.T) {
+	cases := []struct {
+		input string
+		want  int
+	}{
+		{"AES", AlgorithmAES},
+		{"aes", AlgorithmAES},
+		{"Aes", AlgorithmAES},
+		{"DES", AlgorithmDES},
+		{"TRIPLEDES", AlgorithmTripleDES},
+		{"3DES", AlgorithmTripleDES},
+		{"RSA", AlgorithmRSA},
+		{"DSA", AlgorithmDSA},
+		{"ECDSA", AlgorithmECDSA},
+		{"HMACSHA1", AlgorithmHMACSHA1},
+		{"HMACSHA256", AlgorithmHMACSHA256},
+		{"HMACSHA384", AlgorithmHMACSHA384},
+		{"HMACSHA512", AlgorithmHMACSHA512},
+		{"unknown", 0},
+		{"", 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.input, func(t *testing.T) {
+			got := ResolveAlgorithm(tc.input)
+			if got != tc.want {
+				t.Errorf("ResolveAlgorithm(%q) = 0x%X, want 0x%X", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// KmipError tests
+// ---------------------------------------------------------------------------
+
+func TestKmipError(t *testing.T) {
+	t.Run("Error() returns message", func(t *testing.T) {
+		err := &KmipError{Message: "test error", ResultStatus: 1, ResultReason: 2}
+		if err.Error() != "test error" {
+			t.Errorf("Error() = %q, want %q", err.Error(), "test error")
+		}
+	})
+
+	t.Run("ParseResponse returns KmipError with reason", func(t *testing.T) {
+		batchChildren := [][]byte{
+			EncodeEnum(TagOperation, OperationGet),
+			EncodeEnum(TagResultStatus, ResultStatusOperationFailed),
+			EncodeEnum(TagResultReason, 4),
+			EncodeTextString(TagResultMessage, "not found"),
+		}
+		response := EncodeStructure(TagResponseMessage,
+			EncodeStructure(TagResponseHeader,
+				EncodeStructure(TagProtocolVersion,
+					EncodeInteger(TagProtocolVersionMajor, 1),
+					EncodeInteger(TagProtocolVersionMinor, 4),
+				),
+				EncodeInteger(TagBatchCount, 1),
+			),
+			EncodeStructure(TagBatchItem, batchChildren...),
+		)
+		_, err := ParseResponse(response)
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		var kmipErr *KmipError
+		if !errors.As(err, &kmipErr) {
+			t.Fatal("expected KmipError type")
+		}
+		if kmipErr.ResultReason != 4 {
+			t.Errorf("ResultReason = %d, want 4", kmipErr.ResultReason)
+		}
+	})
+}
