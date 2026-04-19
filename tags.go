@@ -203,9 +203,11 @@ const (
 	AlgorithmDSA        = 0x00000005
 	AlgorithmECDSA      = 0x00000006
 	AlgorithmHMACSHA1   = 0x00000007
-	AlgorithmHMACSHA256 = 0x00000008
-	AlgorithmHMACSHA384 = 0x00000009
-	AlgorithmHMACSHA512 = 0x0000000A
+	AlgorithmHMACSHA224 = 0x00000008
+	AlgorithmHMACSHA256 = 0x00000009
+	AlgorithmHMACSHA384 = 0x0000000A
+	AlgorithmHMACSHA512 = 0x0000000B
+	AlgorithmHMACMD5    = 0x0000000C
 )
 
 // Name types.
@@ -223,6 +225,8 @@ const (
 	UsageMaskWrapKey      = 0x00000010
 	UsageMaskUnwrapKey    = 0x00000020
 	UsageMaskExport       = 0x00000040
-	UsageMaskDeriveKey    = 0x00000100
+	UsageMaskMACGenerate  = 0x00000080
+	UsageMaskMACVerify    = 0x00000100
+	UsageMaskDeriveKey    = 0x00000200
 	UsageMaskKeyAgreement = 0x00000800
 )

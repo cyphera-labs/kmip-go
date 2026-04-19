@@ -209,26 +209,36 @@ func TestAlgorithmValues(t *testing.T) {
 			t.Errorf("got 0x%08X, want 0x00000007", AlgorithmHMACSHA1)
 		}
 	})
-	t.Run("HMACSHA256 = 0x00000008", func(t *testing.T) {
-		if AlgorithmHMACSHA256 != 0x00000008 {
-			t.Errorf("got 0x%08X, want 0x00000008", AlgorithmHMACSHA256)
+	t.Run("HMACSHA224 = 0x00000008", func(t *testing.T) {
+		if AlgorithmHMACSHA224 != 0x00000008 {
+			t.Errorf("got 0x%08X, want 0x00000008", AlgorithmHMACSHA224)
 		}
 	})
-	t.Run("HMACSHA384 = 0x00000009", func(t *testing.T) {
-		if AlgorithmHMACSHA384 != 0x00000009 {
-			t.Errorf("got 0x%08X, want 0x00000009", AlgorithmHMACSHA384)
+	t.Run("HMACSHA256 = 0x00000009", func(t *testing.T) {
+		if AlgorithmHMACSHA256 != 0x00000009 {
+			t.Errorf("got 0x%08X, want 0x00000009", AlgorithmHMACSHA256)
 		}
 	})
-	t.Run("HMACSHA512 = 0x0000000A", func(t *testing.T) {
-		if AlgorithmHMACSHA512 != 0x0000000A {
-			t.Errorf("got 0x%08X, want 0x0000000A", AlgorithmHMACSHA512)
+	t.Run("HMACSHA384 = 0x0000000A", func(t *testing.T) {
+		if AlgorithmHMACSHA384 != 0x0000000A {
+			t.Errorf("got 0x%08X, want 0x0000000A", AlgorithmHMACSHA384)
+		}
+	})
+	t.Run("HMACSHA512 = 0x0000000B", func(t *testing.T) {
+		if AlgorithmHMACSHA512 != 0x0000000B {
+			t.Errorf("got 0x%08X, want 0x0000000B", AlgorithmHMACSHA512)
+		}
+	})
+	t.Run("HMACMD5 = 0x0000000C", func(t *testing.T) {
+		if AlgorithmHMACMD5 != 0x0000000C {
+			t.Errorf("got 0x%08X, want 0x0000000C", AlgorithmHMACMD5)
 		}
 	})
 	t.Run("no duplicate Algorithm values", func(t *testing.T) {
 		values := []int{
 			AlgorithmDES, AlgorithmTripleDES, AlgorithmAES, AlgorithmRSA,
-			AlgorithmDSA, AlgorithmECDSA, AlgorithmHMACSHA1, AlgorithmHMACSHA256,
-			AlgorithmHMACSHA384, AlgorithmHMACSHA512,
+			AlgorithmDSA, AlgorithmECDSA, AlgorithmHMACSHA1, AlgorithmHMACSHA224,
+			AlgorithmHMACSHA256, AlgorithmHMACSHA384, AlgorithmHMACSHA512, AlgorithmHMACMD5,
 		}
 		seen := make(map[int]bool)
 		for _, v := range values {
@@ -352,9 +362,19 @@ func TestUsageMaskValues(t *testing.T) {
 			t.Errorf("got 0x%08X, want 0x00000040", UsageMaskExport)
 		}
 	})
-	t.Run("DeriveKey = 0x00000100", func(t *testing.T) {
-		if UsageMaskDeriveKey != 0x00000100 {
-			t.Errorf("got 0x%08X, want 0x00000100", UsageMaskDeriveKey)
+	t.Run("MACGenerate = 0x00000080", func(t *testing.T) {
+		if UsageMaskMACGenerate != 0x00000080 {
+			t.Errorf("got 0x%08X, want 0x00000080", UsageMaskMACGenerate)
+		}
+	})
+	t.Run("MACVerify = 0x00000100", func(t *testing.T) {
+		if UsageMaskMACVerify != 0x00000100 {
+			t.Errorf("got 0x%08X, want 0x00000100", UsageMaskMACVerify)
+		}
+	})
+	t.Run("DeriveKey = 0x00000200", func(t *testing.T) {
+		if UsageMaskDeriveKey != 0x00000200 {
+			t.Errorf("got 0x%08X, want 0x00000200", UsageMaskDeriveKey)
 		}
 	})
 	t.Run("KeyAgreement = 0x00000800", func(t *testing.T) {
@@ -372,7 +392,7 @@ func TestUsageMaskValues(t *testing.T) {
 		values := []int{
 			UsageMaskSign, UsageMaskVerify, UsageMaskEncrypt, UsageMaskDecrypt,
 			UsageMaskWrapKey, UsageMaskUnwrapKey, UsageMaskExport,
-			UsageMaskDeriveKey, UsageMaskKeyAgreement,
+			UsageMaskMACGenerate, UsageMaskMACVerify, UsageMaskDeriveKey, UsageMaskKeyAgreement,
 		}
 		combined := 0
 		for _, v := range values {
