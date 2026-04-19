@@ -161,6 +161,28 @@ func (c *KmipClient) Create(name string, algorithm int, length int32) (*CreateRe
 	return ParseCreatePayload(resp.Payload), nil
 }
 
+// Activate sets a key's state to Active.
+func (c *KmipClient) Activate(uniqueID string) error {
+	request := BuildActivateRequest(uniqueID)
+	responseData, err := c.send(request)
+	if err != nil {
+		return err
+	}
+	_, err = ParseResponse(responseData)
+	return err
+}
+
+// Destroy destroys a key by unique ID.
+func (c *KmipClient) Destroy(uniqueID string) error {
+	request := BuildDestroyRequest(uniqueID)
+	responseData, err := c.send(request)
+	if err != nil {
+		return err
+	}
+	_, err = ParseResponse(responseData)
+	return err
+}
+
 // FetchKey locates a key by name and returns the raw key bytes.
 func (c *KmipClient) FetchKey(name string) ([]byte, error) {
 	ids, err := c.Locate(name)

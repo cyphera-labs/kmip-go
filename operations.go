@@ -138,6 +138,40 @@ func BuildCreateRequest(name string, algorithm int, length int32) []byte {
 	)
 }
 
+// BuildActivateRequest builds an Activate request for a key by unique ID.
+func BuildActivateRequest(uniqueID string) []byte {
+	payload := EncodeStructure(TagRequestPayload,
+		EncodeTextString(TagUniqueIdentifier, uniqueID),
+	)
+
+	batchItem := EncodeStructure(TagBatchItem,
+		EncodeEnum(TagOperation, OperationActivate),
+		payload,
+	)
+
+	return EncodeStructure(TagRequestMessage,
+		buildRequestHeader(1),
+		batchItem,
+	)
+}
+
+// BuildDestroyRequest builds a Destroy request for a key by unique ID.
+func BuildDestroyRequest(uniqueID string) []byte {
+	payload := EncodeStructure(TagRequestPayload,
+		EncodeTextString(TagUniqueIdentifier, uniqueID),
+	)
+
+	batchItem := EncodeStructure(TagBatchItem,
+		EncodeEnum(TagOperation, OperationDestroy),
+		payload,
+	)
+
+	return EncodeStructure(TagRequestMessage,
+		buildRequestHeader(1),
+		batchItem,
+	)
+}
+
 // ParseResponse parses a KMIP response message.
 func ParseResponse(data []byte) (*Response, error) {
 	msg, err := DecodeTTLV(data, 0)
