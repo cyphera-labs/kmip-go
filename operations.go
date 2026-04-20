@@ -199,9 +199,10 @@ func ParseResponse(data []byte) (*Response, error) {
 	if operationItem != nil {
 		resp.Operation = int(operationItem.IntValue())
 	}
-	if statusItem != nil {
-		resp.ResultStatus = int(statusItem.IntValue())
+	if statusItem == nil {
+		return nil, fmt.Errorf("KMIP: response missing ResultStatus")
 	}
+	resp.ResultStatus = int(statusItem.IntValue())
 	if reasonItem != nil {
 		resp.ResultReason = int(reasonItem.IntValue())
 	}
@@ -241,6 +242,9 @@ func ParseLocatePayload(payload *Item) *LocateResult {
 
 // ParseGetPayload parses a Get response payload.
 func ParseGetPayload(payload *Item) *GetResult {
+	if payload == nil {
+		return &GetResult{}
+	}
 	uid := FindChild(payload, TagUniqueIdentifier)
 	objType := FindChild(payload, TagObjectType)
 
@@ -274,6 +278,9 @@ func ParseGetPayload(payload *Item) *GetResult {
 
 // ParseCreatePayload parses a Create response payload.
 func ParseCreatePayload(payload *Item) *CreateResult {
+	if payload == nil {
+		return &CreateResult{}
+	}
 	uid := FindChild(payload, TagUniqueIdentifier)
 	objType := FindChild(payload, TagObjectType)
 	result := &CreateResult{}

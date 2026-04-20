@@ -19,7 +19,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"math"
 )
 
 // KMIP data types.
@@ -101,7 +100,7 @@ func (it *Item) BytesValue() []byte {
 // EncodeTTLV encodes a TTLV item to a byte slice.
 func EncodeTTLV(tag int, typ int, value []byte) []byte {
 	valueLen := len(value)
-	padded := int(math.Ceil(float64(valueLen)/8.0)) * 8
+	padded := ((valueLen + 7) / 8) * 8
 	buf := make([]byte, 8+padded)
 
 	// Tag: 3 bytes big-endian
@@ -202,7 +201,7 @@ func decodeTTLVDepth(data []byte, offset int, depth int) (*Item, error) {
 	tag := (int(data[offset]) << 16) | (int(data[offset+1]) << 8) | int(data[offset+2])
 	typ := int(data[offset+3])
 	length := int(binary.BigEndian.Uint32(data[offset+4 : offset+8]))
-	padded := int(math.Ceil(float64(length)/8.0)) * 8
+	padded := ((length + 7) / 8) * 8
 	totalLength := 8 + padded
 	valueStart := offset + 8
 

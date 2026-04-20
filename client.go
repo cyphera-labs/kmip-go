@@ -22,6 +22,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -101,6 +102,7 @@ func NewClient(opts ClientOptions) (*KmipClient, error) {
 
 	// Only set InsecureSkipVerify if explicitly requested.
 	if opts.InsecureSkipVerify {
+		fmt.Fprintln(os.Stderr, "WARNING: kmip-go: InsecureSkipVerify enabled — server certificate verification disabled")
 		tlsConfig.InsecureSkipVerify = true
 	}
 
@@ -517,10 +519,12 @@ func (c *KmipClient) Close() error {
 }
 
 // ZeroBytes securely zeroes a byte slice. Call this on key material when done.
+// The runtime.KeepAlive prevents the compiler from optimizing away the zeroing.
 func ZeroBytes(b []byte) {
 	for i := range b {
 		b[i] = 0
 	}
+	runtime.KeepAlive(b)
 }
 
 // send sends a KMIP request and receives the response.
