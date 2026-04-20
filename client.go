@@ -15,6 +15,7 @@
 package kmip
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/binary"
@@ -32,24 +33,59 @@ import (
 const maxResponseSize = 16 << 20
 
 // ClientOptions configures a KmipClient.
+// fixes MEDIUM-M1: InsecureSkipVerify removed from public struct.
 type ClientOptions struct {
-	Host               string        // KMIP server hostname (required)
-	Port               int           // KMIP server port (default 5696)
-	ClientCert         string        // Path to client certificate PEM (required)
-	ClientKey          string        // Path to client private key PEM (required)
-	CACert             string        // Path to CA certificate PEM (uses system roots if empty)
-	Timeout            time.Duration // Connection timeout (default 10s)
-	InsecureSkipVerify bool          // DANGER: disables server certificate verification
+	Host       string        // KMIP server hostname (required)
+	Port       int           // KMIP server port (default 5696)
+	ClientCert string        // Path to client certificate PEM (required)
+	ClientKey  string        // Path to client private key PEM (required)
+	CACert     string        // Path to CA certificate PEM (uses system roots if empty)
+	Timeout    time.Duration // Connection timeout (default 10s)
+	// fixes MEDIUM-M3: KMIP Authentication credential support.
+	Username string // KMIP username for UsernameAndPassword credential (optional)
+	Password string // KMIP password for UsernameAndPassword credential (optional)
+}
+
+// KeyHandle wraps raw key material with secure zeroing on Close.
+// fixes MEDIUM-M2: key material returned as bare []byte.
+type KeyHandle struct {
+	data []byte
+}
+
+// newKeyHandle creates a KeyHandle with a runtime finalizer as backstop.
+func newKeyHandle(data []byte) *KeyHandle {
+	h := &KeyHandle{data: data}
+	runtime.SetFinalizer(h, func(kh *KeyHandle) { kh.Close() })
+	return h
+}
+
+// Bytes returns the raw key bytes. Returns nil after Close.
+func (h *KeyHandle) Bytes() []byte {
+	return h.data
+}
+
+// Close zeroes the key material and releases it.
+func (h *KeyHandle) Close() {
+	if h.data != nil {
+		for i := range h.data {
+			h.data[i] = 0
+		}
+		runtime.KeepAlive(h.data)
+		h.data = nil
+		runtime.SetFinalizer(h, nil)
+	}
 }
 
 // KmipClient connects to a KMIP 1.4 server via mTLS.
 type KmipClient struct {
-	mu      sync.Mutex
-	host    string
-	port    int
-	timeout time.Duration
-	config  *tls.Config
-	conn    *tls.Conn
+	mu       sync.Mutex
+	host     string
+	port     int
+	timeout  time.Duration
+	config   *tls.Config
+	conn     *tls.Conn
+	username string // fixes MEDIUM-M3
+	password string // fixes MEDIUM-M3
 }
 
 // NewClient creates a new KmipClient.
@@ -100,24 +136,34 @@ func NewClient(opts ClientOptions) (*KmipClient, error) {
 	}
 	// When CACert is empty, RootCAs is nil → Go uses system certificate pool.
 
-	// Only set InsecureSkipVerify if explicitly requested.
-	if opts.InsecureSkipVerify {
-		fmt.Fprintln(os.Stderr, "WARNING: kmip-go: InsecureSkipVerify enabled — server certificate verification disabled")
-		tlsConfig.InsecureSkipVerify = true
-	}
-
 	return &KmipClient{
-		host:    opts.Host,
-		port:    opts.Port,
-		timeout: opts.Timeout,
-		config:  tlsConfig,
+		host:     opts.Host,
+		port:     opts.Port,
+		timeout:  opts.Timeout,
+		config:   tlsConfig,
+		username: opts.Username,
+		password: opts.Password,
 	}, nil
 }
 
+// NewClientInsecure creates a KmipClient with server certificate verification disabled.
+// This MUST only be used in test environments.
+// fixes MEDIUM-M1: insecure mode gated behind a separate constructor.
+func NewClientInsecure(opts ClientOptions) (*KmipClient, error) {
+	fmt.Fprintln(os.Stderr, "WARNING: kmip-go: InsecureSkipVerify enabled — server certificate verification disabled")
+	client, err := NewClient(opts)
+	if err != nil {
+		return nil, err
+	}
+	client.config.InsecureSkipVerify = true
+	return client, nil
+}
+
 // Locate finds keys by name.
-func (c *KmipClient) Locate(name string) ([]string, error) {
+// fixes MEDIUM-M4: context propagation.
+func (c *KmipClient) Locate(ctx context.Context, name string) ([]string, error) {
 	request := BuildLocateRequest(name)
-	responseData, err := c.send(request)
+	responseData, err := c.send(ctx, request)
 	if err != nil {
 		return nil, err
 	}
@@ -130,9 +176,9 @@ func (c *KmipClient) Locate(name string) ([]string, error) {
 }
 
 // Get fetches key material by unique ID.
-func (c *KmipClient) Get(uniqueID string) (*GetResult, error) {
+func (c *KmipClient) Get(ctx context.Context, uniqueID string) (*GetResult, error) {
 	request := BuildGetRequest(uniqueID)
-	responseData, err := c.send(request)
+	responseData, err := c.send(ctx, request)
 	if err != nil {
 		return nil, err
 	}
@@ -144,7 +190,7 @@ func (c *KmipClient) Get(uniqueID string) (*GetResult, error) {
 }
 
 // Create creates a new symmetric key on the server.
-func (c *KmipClient) Create(name string, algorithm int, length int32) (*CreateResult, error) {
+func (c *KmipClient) Create(ctx context.Context, name string, algorithm int, length int32) (*CreateResult, error) {
 	if algorithm == 0 {
 		algorithm = AlgorithmAES
 	}
@@ -152,7 +198,7 @@ func (c *KmipClient) Create(name string, algorithm int, length int32) (*CreateRe
 		length = 256
 	}
 	request := BuildCreateRequest(name, algorithm, length)
-	responseData, err := c.send(request)
+	responseData, err := c.send(ctx, request)
 	if err != nil {
 		return nil, err
 	}
@@ -164,9 +210,9 @@ func (c *KmipClient) Create(name string, algorithm int, length int32) (*CreateRe
 }
 
 // Activate sets a key's state to Active.
-func (c *KmipClient) Activate(uniqueID string) error {
+func (c *KmipClient) Activate(ctx context.Context, uniqueID string) error {
 	request := BuildActivateRequest(uniqueID)
-	responseData, err := c.send(request)
+	responseData, err := c.send(ctx, request)
 	if err != nil {
 		return err
 	}
@@ -175,9 +221,9 @@ func (c *KmipClient) Activate(uniqueID string) error {
 }
 
 // Destroy destroys a key by unique ID.
-func (c *KmipClient) Destroy(uniqueID string) error {
+func (c *KmipClient) Destroy(ctx context.Context, uniqueID string) error {
 	request := BuildDestroyRequest(uniqueID)
-	responseData, err := c.send(request)
+	responseData, err := c.send(ctx, request)
 	if err != nil {
 		return err
 	}
@@ -185,29 +231,35 @@ func (c *KmipClient) Destroy(uniqueID string) error {
 	return err
 }
 
-// FetchKey locates a key by name and returns the raw key bytes.
-func (c *KmipClient) FetchKey(name string) ([]byte, error) {
-	ids, err := c.Locate(name)
+// FetchKey locates a key by name and returns a KeyHandle wrapping the raw key bytes.
+// fixes MEDIUM-M2: returns KeyHandle instead of bare []byte.
+// fixes LOW-L3: errors when multiple keys match the name.
+func (c *KmipClient) FetchKey(ctx context.Context, name string) (*KeyHandle, error) {
+	ids, err := c.Locate(ctx, name)
 	if err != nil {
 		return nil, err
 	}
 	if len(ids) == 0 {
 		return nil, fmt.Errorf("KMIP: no key found with name %q", name)
 	}
-	result, err := c.Get(ids[0])
+	if len(ids) > 1 {
+		// fixes LOW-L3: error when multiple keys match
+		return nil, fmt.Errorf("KMIP: ambiguous — %d keys found with name %q", len(ids), name)
+	}
+	result, err := c.Get(ctx, ids[0])
 	if err != nil {
 		return nil, err
 	}
 	if result.KeyMaterial == nil {
 		return nil, fmt.Errorf("KMIP: key %q (%s) has no extractable material", name, ids[0])
 	}
-	return result.KeyMaterial, nil
+	return newKeyHandle(result.KeyMaterial), nil
 }
 
 // CreateKeyPair creates a new asymmetric key pair on the server.
-func (c *KmipClient) CreateKeyPair(name string, algorithm int, length int32) (*CreateKeyPairResult, error) {
+func (c *KmipClient) CreateKeyPair(ctx context.Context, name string, algorithm int, length int32) (*CreateKeyPairResult, error) {
 	request := BuildCreateKeyPairRequest(name, algorithm, length)
-	responseData, err := c.send(request)
+	responseData, err := c.send(ctx, request)
 	if err != nil {
 		return nil, err
 	}
@@ -219,9 +271,9 @@ func (c *KmipClient) CreateKeyPair(name string, algorithm int, length int32) (*C
 }
 
 // Register registers existing key material on the server.
-func (c *KmipClient) Register(objectType int, material []byte, name string, algorithm int, length int32) (*CreateResult, error) {
+func (c *KmipClient) Register(ctx context.Context, objectType int, material []byte, name string, algorithm int, length int32) (*CreateResult, error) {
 	request := BuildRegisterRequest(objectType, material, name, algorithm, length)
-	responseData, err := c.send(request)
+	responseData, err := c.send(ctx, request)
 	if err != nil {
 		return nil, err
 	}
@@ -233,9 +285,9 @@ func (c *KmipClient) Register(objectType int, material []byte, name string, algo
 }
 
 // ReKey re-keys an existing key on the server.
-func (c *KmipClient) ReKey(uniqueID string) (*ReKeyResult, error) {
+func (c *KmipClient) ReKey(ctx context.Context, uniqueID string) (*ReKeyResult, error) {
 	request := BuildReKeyRequest(uniqueID)
-	responseData, err := c.send(request)
+	responseData, err := c.send(ctx, request)
 	if err != nil {
 		return nil, err
 	}
@@ -247,9 +299,9 @@ func (c *KmipClient) ReKey(uniqueID string) (*ReKeyResult, error) {
 }
 
 // DeriveKey derives a new key from an existing key.
-func (c *KmipClient) DeriveKey(uniqueID string, derivationData []byte, name string, length int32) (*DeriveKeyResult, error) {
+func (c *KmipClient) DeriveKey(ctx context.Context, uniqueID string, derivationData []byte, name string, length int32) (*DeriveKeyResult, error) {
 	request := BuildDeriveKeyRequest(uniqueID, derivationData, name, length)
-	responseData, err := c.send(request)
+	responseData, err := c.send(ctx, request)
 	if err != nil {
 		return nil, err
 	}
@@ -261,9 +313,9 @@ func (c *KmipClient) DeriveKey(uniqueID string, derivationData []byte, name stri
 }
 
 // Check checks the status of a managed object.
-func (c *KmipClient) Check(uniqueID string) (*CheckResult, error) {
+func (c *KmipClient) Check(ctx context.Context, uniqueID string) (*CheckResult, error) {
 	request := BuildCheckRequest(uniqueID)
-	responseData, err := c.send(request)
+	responseData, err := c.send(ctx, request)
 	if err != nil {
 		return nil, err
 	}
@@ -275,9 +327,9 @@ func (c *KmipClient) Check(uniqueID string) (*CheckResult, error) {
 }
 
 // GetAttributes fetches all attributes of a managed object.
-func (c *KmipClient) GetAttributes(uniqueID string) (*GetResult, error) {
+func (c *KmipClient) GetAttributes(ctx context.Context, uniqueID string) (*GetResult, error) {
 	request := BuildGetAttributesRequest(uniqueID)
-	responseData, err := c.send(request)
+	responseData, err := c.send(ctx, request)
 	if err != nil {
 		return nil, err
 	}
@@ -289,9 +341,9 @@ func (c *KmipClient) GetAttributes(uniqueID string) (*GetResult, error) {
 }
 
 // GetAttributeList fetches the list of attribute names for a managed object.
-func (c *KmipClient) GetAttributeList(uniqueID string) ([]string, error) {
+func (c *KmipClient) GetAttributeList(ctx context.Context, uniqueID string) ([]string, error) {
 	request := BuildGetAttributeListRequest(uniqueID)
-	responseData, err := c.send(request)
+	responseData, err := c.send(ctx, request)
 	if err != nil {
 		return nil, err
 	}
@@ -311,9 +363,9 @@ func (c *KmipClient) GetAttributeList(uniqueID string) ([]string, error) {
 }
 
 // AddAttribute adds an attribute to a managed object.
-func (c *KmipClient) AddAttribute(uniqueID, name, value string) error {
+func (c *KmipClient) AddAttribute(ctx context.Context, uniqueID, name, value string) error {
 	request := BuildAddAttributeRequest(uniqueID, name, value)
-	responseData, err := c.send(request)
+	responseData, err := c.send(ctx, request)
 	if err != nil {
 		return err
 	}
@@ -322,9 +374,9 @@ func (c *KmipClient) AddAttribute(uniqueID, name, value string) error {
 }
 
 // ModifyAttribute modifies an attribute of a managed object.
-func (c *KmipClient) ModifyAttribute(uniqueID, name, value string) error {
+func (c *KmipClient) ModifyAttribute(ctx context.Context, uniqueID, name, value string) error {
 	request := BuildModifyAttributeRequest(uniqueID, name, value)
-	responseData, err := c.send(request)
+	responseData, err := c.send(ctx, request)
 	if err != nil {
 		return err
 	}
@@ -333,9 +385,9 @@ func (c *KmipClient) ModifyAttribute(uniqueID, name, value string) error {
 }
 
 // DeleteAttribute deletes an attribute from a managed object.
-func (c *KmipClient) DeleteAttribute(uniqueID, name string) error {
+func (c *KmipClient) DeleteAttribute(ctx context.Context, uniqueID, name string) error {
 	request := BuildDeleteAttributeRequest(uniqueID, name)
-	responseData, err := c.send(request)
+	responseData, err := c.send(ctx, request)
 	if err != nil {
 		return err
 	}
@@ -344,9 +396,9 @@ func (c *KmipClient) DeleteAttribute(uniqueID, name string) error {
 }
 
 // ObtainLease obtains a lease for a managed object. Returns lease time in seconds.
-func (c *KmipClient) ObtainLease(uniqueID string) (int, error) {
+func (c *KmipClient) ObtainLease(ctx context.Context, uniqueID string) (int, error) {
 	request := BuildObtainLeaseRequest(uniqueID)
-	responseData, err := c.send(request)
+	responseData, err := c.send(ctx, request)
 	if err != nil {
 		return 0, err
 	}
@@ -365,9 +417,9 @@ func (c *KmipClient) ObtainLease(uniqueID string) (int, error) {
 }
 
 // Revoke revokes a managed object with the given reason code.
-func (c *KmipClient) Revoke(uniqueID string, reason int) error {
+func (c *KmipClient) Revoke(ctx context.Context, uniqueID string, reason int) error {
 	request := BuildRevokeRequest(uniqueID, reason)
-	responseData, err := c.send(request)
+	responseData, err := c.send(ctx, request)
 	if err != nil {
 		return err
 	}
@@ -376,9 +428,9 @@ func (c *KmipClient) Revoke(uniqueID string, reason int) error {
 }
 
 // Archive archives a managed object.
-func (c *KmipClient) Archive(uniqueID string) error {
+func (c *KmipClient) Archive(ctx context.Context, uniqueID string) error {
 	request := BuildArchiveRequest(uniqueID)
-	responseData, err := c.send(request)
+	responseData, err := c.send(ctx, request)
 	if err != nil {
 		return err
 	}
@@ -387,9 +439,9 @@ func (c *KmipClient) Archive(uniqueID string) error {
 }
 
 // Recover recovers an archived managed object.
-func (c *KmipClient) Recover(uniqueID string) error {
+func (c *KmipClient) Recover(ctx context.Context, uniqueID string) error {
 	request := BuildRecoverRequest(uniqueID)
-	responseData, err := c.send(request)
+	responseData, err := c.send(ctx, request)
 	if err != nil {
 		return err
 	}
@@ -398,9 +450,9 @@ func (c *KmipClient) Recover(uniqueID string) error {
 }
 
 // Query queries the server for supported operations and object types.
-func (c *KmipClient) Query() (*QueryResult, error) {
+func (c *KmipClient) Query(ctx context.Context) (*QueryResult, error) {
 	request := BuildQueryRequest()
-	responseData, err := c.send(request)
+	responseData, err := c.send(ctx, request)
 	if err != nil {
 		return nil, err
 	}
@@ -412,9 +464,9 @@ func (c *KmipClient) Query() (*QueryResult, error) {
 }
 
 // Poll polls the server.
-func (c *KmipClient) Poll() error {
+func (c *KmipClient) Poll(ctx context.Context) error {
 	request := BuildPollRequest()
-	responseData, err := c.send(request)
+	responseData, err := c.send(ctx, request)
 	if err != nil {
 		return err
 	}
@@ -423,9 +475,9 @@ func (c *KmipClient) Poll() error {
 }
 
 // DiscoverVersions discovers the KMIP versions supported by the server.
-func (c *KmipClient) DiscoverVersions() (*DiscoverVersionsResult, error) {
+func (c *KmipClient) DiscoverVersions(ctx context.Context) (*DiscoverVersionsResult, error) {
 	request := BuildDiscoverVersionsRequest()
-	responseData, err := c.send(request)
+	responseData, err := c.send(ctx, request)
 	if err != nil {
 		return nil, err
 	}
@@ -437,9 +489,9 @@ func (c *KmipClient) DiscoverVersions() (*DiscoverVersionsResult, error) {
 }
 
 // Encrypt encrypts data using a managed key.
-func (c *KmipClient) Encrypt(uniqueID string, data []byte) (*EncryptResult, error) {
+func (c *KmipClient) Encrypt(ctx context.Context, uniqueID string, data []byte) (*EncryptResult, error) {
 	request := BuildEncryptRequest(uniqueID, data)
-	responseData, err := c.send(request)
+	responseData, err := c.send(ctx, request)
 	if err != nil {
 		return nil, err
 	}
@@ -451,9 +503,9 @@ func (c *KmipClient) Encrypt(uniqueID string, data []byte) (*EncryptResult, erro
 }
 
 // Decrypt decrypts data using a managed key.
-func (c *KmipClient) Decrypt(uniqueID string, data []byte, nonce []byte) (*DecryptResult, error) {
+func (c *KmipClient) Decrypt(ctx context.Context, uniqueID string, data []byte, nonce []byte) (*DecryptResult, error) {
 	request := BuildDecryptRequest(uniqueID, data, nonce)
-	responseData, err := c.send(request)
+	responseData, err := c.send(ctx, request)
 	if err != nil {
 		return nil, err
 	}
@@ -465,9 +517,9 @@ func (c *KmipClient) Decrypt(uniqueID string, data []byte, nonce []byte) (*Decry
 }
 
 // Sign signs data using a managed key.
-func (c *KmipClient) Sign(uniqueID string, data []byte) (*SignResult, error) {
+func (c *KmipClient) Sign(ctx context.Context, uniqueID string, data []byte) (*SignResult, error) {
 	request := BuildSignRequest(uniqueID, data)
-	responseData, err := c.send(request)
+	responseData, err := c.send(ctx, request)
 	if err != nil {
 		return nil, err
 	}
@@ -479,9 +531,9 @@ func (c *KmipClient) Sign(uniqueID string, data []byte) (*SignResult, error) {
 }
 
 // SignatureVerify verifies a signature using a managed key.
-func (c *KmipClient) SignatureVerify(uniqueID string, data []byte, signature []byte) (*SignatureVerifyResult, error) {
+func (c *KmipClient) SignatureVerify(ctx context.Context, uniqueID string, data []byte, signature []byte) (*SignatureVerifyResult, error) {
 	request := BuildSignatureVerifyRequest(uniqueID, data, signature)
-	responseData, err := c.send(request)
+	responseData, err := c.send(ctx, request)
 	if err != nil {
 		return nil, err
 	}
@@ -493,9 +545,9 @@ func (c *KmipClient) SignatureVerify(uniqueID string, data []byte, signature []b
 }
 
 // MAC computes a MAC using a managed key.
-func (c *KmipClient) MAC(uniqueID string, data []byte) (*MACResult, error) {
+func (c *KmipClient) MAC(ctx context.Context, uniqueID string, data []byte) (*MACResult, error) {
 	request := BuildMACRequest(uniqueID, data)
-	responseData, err := c.send(request)
+	responseData, err := c.send(ctx, request)
 	if err != nil {
 		return nil, err
 	}
@@ -529,27 +581,36 @@ func ZeroBytes(b []byte) {
 
 // send sends a KMIP request and receives the response.
 // Thread-safe: only one operation at a time per connection.
-func (c *KmipClient) send(request []byte) ([]byte, error) {
+// fixes MEDIUM-M4: accepts context for per-call deadlines.
+func (c *KmipClient) send(ctx context.Context, request []byte) ([]byte, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	conn, err := c.connect()
+	conn, err := c.connect(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	// Set deadline for this operation.
-	conn.SetDeadline(time.Now().Add(c.timeout))
+	// fixes MEDIUM-M4: use context deadline if set, otherwise fall back to timeout.
+	deadline := time.Now().Add(c.timeout)
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+		deadline = ctxDeadline
+	}
+	conn.SetDeadline(deadline)
 
 	// Write request.
 	if _, err := conn.Write(request); err != nil {
-		c.conn = nil // Mark connection as stale.
+		// fixes LOW-L4: close stale connection before nil assignment.
+		c.conn.Close()
+		c.conn = nil
 		return nil, fmt.Errorf("KMIP: failed to write request: %w", err)
 	}
 
 	// Read TTLV header (8 bytes) to determine response length.
 	header := make([]byte, 8)
 	if _, err := io.ReadFull(conn, header); err != nil {
+		// fixes LOW-L4: close stale connection before nil assignment.
+		c.conn.Close()
 		c.conn = nil
 		return nil, fmt.Errorf("KMIP: failed to read response header: %w", err)
 	}
@@ -557,6 +618,8 @@ func (c *KmipClient) send(request []byte) ([]byte, error) {
 	// Validate response size.
 	valueLength := int(binary.BigEndian.Uint32(header[4:8]))
 	if valueLength > maxResponseSize {
+		// fixes LOW-L4: close stale connection before nil assignment.
+		c.conn.Close()
 		c.conn = nil
 		return nil, fmt.Errorf("KMIP: response too large (%d bytes, max %d)", valueLength, maxResponseSize)
 	}
@@ -565,6 +628,8 @@ func (c *KmipClient) send(request []byte) ([]byte, error) {
 	copy(response, header)
 
 	if _, err := io.ReadFull(conn, response[8:]); err != nil {
+		// fixes LOW-L4: close stale connection before nil assignment.
+		c.conn.Close()
 		c.conn = nil
 		return nil, fmt.Errorf("KMIP: failed to read response body: %w", err)
 	}
@@ -576,7 +641,8 @@ func (c *KmipClient) send(request []byte) ([]byte, error) {
 }
 
 // connect establishes or reuses the mTLS connection.
-func (c *KmipClient) connect() (*tls.Conn, error) {
+// fixes MEDIUM-M4: accepts context for dialer.
+func (c *KmipClient) connect(ctx context.Context) (*tls.Conn, error) {
 	if c.conn != nil {
 		return c.conn, nil
 	}

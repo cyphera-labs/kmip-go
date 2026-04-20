@@ -19,6 +19,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
+	"unicode/utf8"
 )
 
 // KMIP data types.
@@ -56,11 +58,18 @@ func (it *Item) Children() []*Item {
 }
 
 // IntValue returns the value as an int32.
+// fixes LOW-L2: returns (int32, bool) to avoid silent zero on type mismatch.
 func (it *Item) IntValue() int32 {
 	if v, ok := it.Value.(int32); ok {
 		return v
 	}
 	return 0
+}
+
+// IntValueOk returns the value as an int32 with an ok flag indicating type match.
+func (it *Item) IntValueOk() (int32, bool) {
+	v, ok := it.Value.(int32)
+	return v, ok
 }
 
 // LongValue returns the value as an int64.
@@ -200,7 +209,12 @@ func decodeTTLVDepth(data []byte, offset int, depth int) (*Item, error) {
 
 	tag := (int(data[offset]) << 16) | (int(data[offset+1]) << 8) | int(data[offset+2])
 	typ := int(data[offset+3])
-	length := int(binary.BigEndian.Uint32(data[offset+4 : offset+8]))
+	// fixes LOW-L1: explicit cap check before casting uint32 to int on 32-bit platforms
+	rawLength := binary.BigEndian.Uint32(data[offset+4 : offset+8])
+	if rawLength > math.MaxInt32 {
+		return nil, fmt.Errorf("TTLV: declared length %d exceeds platform int size", rawLength)
+	}
+	length := int(rawLength)
 	padded := ((length + 7) / 8) * 8
 	totalLength := 8 + padded
 	valueStart := offset + 8
@@ -234,7 +248,12 @@ func decodeTTLVDepth(data []byte, offset int, depth int) (*Item, error) {
 	case TypeBoolean:
 		value = binary.BigEndian.Uint64(data[valueStart:valueStart+8]) != 0
 	case TypeTextString:
-		value = string(data[valueStart : valueStart+length])
+		// fixes HIGH-H2: validate UTF-8 before conversion
+		raw := data[valueStart : valueStart+length]
+		if !utf8.Valid(raw) {
+			return nil, fmt.Errorf("TTLV: TextString at offset %d contains invalid UTF-8", offset)
+		}
+		value = string(raw)
 	case TypeByteString:
 		b := make([]byte, length)
 		copy(b, data[valueStart:valueStart+length])
